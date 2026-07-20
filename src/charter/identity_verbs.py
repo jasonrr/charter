@@ -17,5 +17,6 @@ def whoami(body, caller):
     actor = ctx["actor"] if ctx else None
     return {"caller": caller["name"],
             "actor": actor,
+            "is_human": actor is not None,
             "scopes": caller["allow"],
             "credential_mode": f"user:{actor}" if actor else "app"}

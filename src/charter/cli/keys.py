@@ -13,6 +13,7 @@ Usage:
 import argparse
 import hashlib
 import json
+import os
 import secrets
 import sys
 
@@ -114,7 +115,7 @@ def _list():
         print(f"{digest}: {rec['name']} ({rec.get('interface', 'unknown')}) allow={rec['allow']}")
 
 
-def _mint(name, interface="api", allow=None):
+def _mint(name, interface="api", allow=None, require_actor=False):
     """Offline mint: print a random key and the sha256 JSON fragment for env config."""
     key = _generate_key()
     digest = _sha256(key)
@@ -123,12 +124,15 @@ def _mint(name, interface="api", allow=None):
             "name": name,
             "interface": interface,
             "allow": allow or ["*"],
-            "require_actor": False,
+            "require_actor": require_actor,
         }
     }
+    # Offline: read the secret-name hint from env directly, never get_settings()
+    # (which requires GCP_PROJECT et al.) — mint must work before Step 3 config.
+    secret_name = os.environ.get("KEYS_SECRET_NAME", "charter-keys")
     print(f"Generated key for {name}:")
     print(f"  Key: {key}")
-    print(f"  sha256 fragment (add to your {get_settings().keys_secret_name} secret):")
+    print(f"  sha256 fragment (add to your {secret_name} secret):")
     print(json.dumps(fragment, indent=2))
     return key
 
@@ -165,7 +169,10 @@ def main(argv=None):
     mint_cmd.add_argument("--name", required=True)
     mint_cmd.add_argument("--interface", default="api")
     mint_cmd.add_argument("--allow", required=True, help="Comma-separated glob patterns")
-    mint_cmd.set_defaults(func=lambda a: _mint(a.name, a.interface, a.allow.split(",")))
+    mint_cmd.add_argument("--require-actor", action="store_true",
+                          help="Key rejects calls until a human actor signs in (except verbs.list)")
+    mint_cmd.set_defaults(
+        func=lambda a: _mint(a.name, a.interface, a.allow.split(","), a.require_actor))
 
     args = parser.parse_args(argv)
     args.func(args)

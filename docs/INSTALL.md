@@ -22,7 +22,11 @@ access to Gmail, Drive, or other Google APIs.
 
 ## Step 2: Install the package
 
+Create and activate a virtualenv first — otherwise an ambient `uv`/`pip` may
+resolve to the nearest project's environment and install there instead:
+
 ```bash
+python3 -m venv .venv && source .venv/bin/activate
 pip install "git+https://github.com/jasonrr/charter.git"
 ```
 
@@ -42,8 +46,12 @@ Optional: `PACKS=charter` to load the built-in reference packs (the default).
 fragment the engine matches it against.
 
 ```bash
-charter keys mint --name test-agent --allow "data.*,identity.*"
+charter keys mint --name test-agent --allow "data.*,identity.*" --require-actor
 ```
+
+`--require-actor` marks the key so calls are rejected until a human signs in
+(everything except `verbs.list`, which stays open so an agent can inspect its
+toolbox first). That's what produces the `actor_required` you'll see in Step 5.
 
 Store the fragment where the engine reads keys — either of:
 
@@ -51,7 +59,7 @@ Store the fragment where the engine reads keys — either of:
   `charter-keys` secret (name configurable via `KEYS_SECRET_NAME`):
 
   ```bash
-  charter keys mint --name test-agent --allow "data.*,identity.*" \
+  charter keys mint --name test-agent --allow "data.*,identity.*" --require-actor \
     | sed -n '/^{/,$p' > /tmp/keys.json
   gcloud secrets create charter-keys --data-file=/tmp/keys.json
   ```
@@ -61,7 +69,9 @@ Store the fragment where the engine reads keys — either of:
 - **`CHARTER_KEYS` env var** (local dev): export the fragment JSON as
   `CHARTER_KEYS`. It's the cold-start fallback when the Secret Manager fetch
   fails, so a laptop boot without the secret works — after one failed lookup
-  logged at startup.
+  logged at startup. On a laptop with no reachable secret that first lookup can
+  take up to ~60s (the Secret Manager client timeout) and is logged at `ERROR`;
+  this is expected, and cached afterwards.
 
 Save the raw key itself — it is shown once and never stored.
 
@@ -70,8 +80,14 @@ Save the raw key itself — it is shown once and never stored.
 Start the engine:
 
 ```bash
-functions-framework --target=bridge --source=src/charter/main.py
+functions-framework --target=bridge --source=src/charter/main.py --debug
 ```
+
+`--debug` runs the single-process dev server. Use it for all local dev: the
+default (forking) server crashes on macOS the first time an authenticated call
+starts the gRPC-based Secret Manager client and a worker then forks — a macOS
+objc fork-safety abort that surfaces, misleadingly, as a worker `SIGKILL` /
+"out of memory". Production (Cloud Run on Linux) is unaffected.
 
 Call it without a key — auth must fail closed:
 

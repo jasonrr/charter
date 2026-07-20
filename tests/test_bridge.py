@@ -161,10 +161,23 @@ def test_actor_required_when_flagged_and_absent(monkeypatch):
     monkeypatch.setattr(main, "actor_email", lambda req: None)
     calls = []
     monkeypatch.setattr(main, "record", lambda *a, **k: calls.append((a, k)))
-    body, status = _parse(main.bridge(FakeRequest(body={"verb": "verbs.list"})))
+    monkeypatch.setitem(main.VERBS, "sync.status",
+                        (lambda body, caller: {"healthy": True}, "post"))
+    body, status = _parse(main.bridge(FakeRequest(body={"verb": "sync.status"})))
     assert status == 401
     assert body["error"] == "actor_required"
     assert any(a[3] == "actor_required" for a, k in calls)
+
+
+def test_verbs_list_exempt_from_actor_gate(monkeypatch):
+    # Discovery is pre-login: a require_actor key with no actor can still list
+    # its toolbox (so an agent knows to sign in). Backs INSTALL.md Step 5.
+    _as_marketer(monkeypatch)
+    monkeypatch.setattr(main, "actor_email", lambda req: None)
+    monkeypatch.setattr(main, "record", lambda *a, **k: None)
+    body, status = _parse(main.bridge(FakeRequest(body={"verb": "verbs.list"})))
+    assert status == 200
+    assert body["ok"] is True
 
 
 def test_actor_optional_when_not_flagged(monkeypatch):

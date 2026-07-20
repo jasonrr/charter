@@ -40,7 +40,8 @@ def _reload_keys(body, caller):
 # Discovery primitive: any authenticated caller may call verbs.list regardless of scope,
 # so an agent can always learn its own toolbox. It reveals only the verbs the caller is
 # already allowed to use, so it leaks nothing.
-# (require_actor keys: this scope bypass does NOT skip the actor gate — discovery needs sign-in.)
+# (require_actor keys: this ALSO bypasses the actor gate — an agent must be able to inspect
+# its toolbox before a human signs in. Safe: a valid key with no actor leaks nothing new.)
 _ALWAYS_ALLOWED = {"verbs.list"}
 
 
@@ -118,7 +119,7 @@ def bridge(request):
         record(caller, verb, target, e.code, rid=rid, detail=e.detail)
         return _json({"ok": False, "verb": verb, "error": e.code, "detail": e.detail,
                       "request_id": rid}, e.status)
-    if caller.get("require_actor") and not actor:
+    if caller.get("require_actor") and not actor and verb not in _ALWAYS_ALLOWED:
         record(caller, verb, target, "actor_required", rid=rid)
         return _json({"ok": False, "verb": verb, "error": "actor_required",
                       "detail": "Sign in first: call your identity provider login tool, then retry.",
