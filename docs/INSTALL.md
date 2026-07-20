@@ -69,9 +69,10 @@ Store the fragment where the engine reads keys — either of:
 - **`CHARTER_KEYS` env var** (local dev): export the fragment JSON as
   `CHARTER_KEYS`. It's the cold-start fallback when the Secret Manager fetch
   fails, so a laptop boot without the secret works — after one failed lookup
-  logged at startup. On a laptop with no reachable secret that first lookup can
-  take up to ~60s (the Secret Manager client timeout) and is logged at `ERROR`;
-  this is expected, and cached afterwards.
+  logged at startup. That first failed lookup is logged at `ERROR`, then cached:
+  it returns in a second or two if the project rejects the request (a placeholder
+  `GCP_PROJECT` gives a fast permission error), or up to ~60s if the project is
+  genuinely unreachable at the network level. Either way it's expected.
 
 Save the raw key itself — it is shown once and never stored.
 
@@ -120,6 +121,11 @@ curl -s -X POST http://localhost:8080 \
 
 Expected: `actor_required` — correct at this stage; no human actor has signed
 in yet. Identity comes from the proxy in Step 6.
+
+With a placeholder `GCP_PROJECT`, the engine terminal also logs `audit write
+failed … Not found` on each call. That's harmless — auditing fails open, so the
+response is still correct — and it clears once `GCP_PROJECT` points at a real
+project with the audit table.
 
 For a real deployment (Cloud Run behind Cloudflare Access), see
 `docs/deployment/gcp-cloud-run.md`.
