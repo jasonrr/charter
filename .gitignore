@@ -8,6 +8,5 @@ build/
 .pytest_cache/
 *.mcpb
 .DS_Store
-*.mcpb
 .pi-subagents/
 .venv/
