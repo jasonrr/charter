@@ -19,7 +19,10 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="allow")
+    # hide_input_in_errors: a boot-time ValidationError (missing required field)
+    # must not echo the OTHER env values — some are secrets — into logs.
+    model_config = SettingsConfigDict(env_file=".env", extra="allow",
+                                      hide_input_in_errors=True)
 
     # Required engine config — no defaults; startup fails fast when unset.
     gcp_project: str
