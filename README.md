@@ -17,6 +17,33 @@ Charter runs in production at [Radical Candor](https://www.radicalcandor.com),
 which consumes this public engine plus a private pack of its own verbs — the
 same boundary any adopter would use.
 
+## Why not the vendor's MCP server?
+
+Vendor MCP servers solve connectivity: they get an agent talking to one API.
+They don't solve governance. The agent holds a token, and it can do whatever
+that token can do — every object, every destructive operation, attributed to
+whichever account minted it. Charter puts a governed layer in between:
+
+- **Scoped permission, not token permission.** Each agent gets its own key
+  with an allow-list of named verbs (`--allow "data.*"`). An analytics agent
+  can query the warehouse; it cannot touch CRM records, no matter what the
+  underlying credentials allow.
+- **Verbs, not raw CRUD.** A vendor server exposes the API surface and trusts
+  the agent to reconstruct your business rules on every call. A Charter verb
+  ships the rules inside it — validation, guardrails, side effects — so the
+  agent can only do the operation the right way.
+- **An audit trail you own.** Every call is recorded — agent, human actor,
+  verb, target, result — in an append-only log in your warehouse. Keys can
+  require a verified human actor, so "the agent did it" always resolves to a
+  person. Irreversible verbs fail closed: if the audit write fails, the
+  action doesn't happen.
+- **Instant revocation.** Keys are read live from Secret Manager — revoke one
+  and it's dead within a minute, no redeploy, no rotating a shared vendor
+  token out of every install that holds it.
+- **One surface.** One proxy and one curated verb vocabulary across all your
+  systems, instead of a server per vendor, each dumping dozens of tools into
+  the agent's context.
+
 ## Install
 
 ```bash
