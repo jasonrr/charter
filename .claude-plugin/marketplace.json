@@ -1,0 +1,13 @@
+{
+  "name": "charter",
+  "owner": {
+    "name": "Jason Rosoff"
+  },
+  "plugins": [
+    {
+      "name": "charter",
+      "source": "./plugin",
+      "description": "Charter — governed verb API for AI agents. Audited, permissioned, actor-identified verbs with embedded business logic."
+    }
+  ]
+}

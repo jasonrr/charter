@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "charter"
+version = "0.1.0"
+description = "Governed verb API for AI agents — audited, permissioned, actor-identified verbs with embedded business logic"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10,<3.13"
+authors = [
+    {name = "Jason Rosoff"},
+]
+keywords = ["mcp", "api", "agents", "verbs", "governance"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "functions-framework>=3.10.2",
+    "google-cloud-bigquery>=3.0.0",
+    "google-cloud-secret-manager>=2.16.0",
+    "google-auth>=2.6.0",
+    "pydantic-settings>=2.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+]
+
+[project.scripts]
+charter = "charter.cli:main"
+charter-packtest = "charter.packtest.cli:main"
+
+[project.entry-points."charter.packs"]
+airtable = "charter.packs.airtable"
+bigquery = "charter.packs.bigquery"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+charter = ["*.md"]
+"charter.packs.bigquery" = ["*.md"]
+"charter.packs.airtable" = ["*.md"]

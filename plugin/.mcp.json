@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "charter": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/proxy/charter_mcp.js"
+      ],
+      "env": {
+        "CHARTER_URL": "${user_config.charter_url}",
+        "CHARTER_CREDENTIAL": "${user_config.credential}",
+        "CHARTER_GOOGLE_CLIENT_ID": "${user_config.google_client_id}",
+        "CHARTER_GOOGLE_CLIENT_SECRET": "${user_config.google_client_secret}",
+        "CHARTER_DOMAIN_HINT": "${user_config.domain_hint}",
+        "CHARTER_HUBSPOT_CLIENT_ID": "${user_config.hubspot_client_id}"
+      }
+    }
+  }
+}

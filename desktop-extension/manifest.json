@@ -1,0 +1,67 @@
+{
+  "manifest_version": "0.3",
+  "name": "charter",
+  "version": "0.1.0",
+  "description": "Charter — governed verb API for AI agents. Audited, permissioned, actor-identified verbs with embedded business logic. Connect your own Airtable, BigQuery, and HubSpot stacks through a governed verb interface.",
+  "author": {
+    "name": "Charter Contributors"
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "server/charter_mcp.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/server/charter_mcp.js"
+      ],
+      "env": {
+        "CHARTER_URL": "${user_config.charter_url}",
+        "CHARTER_CREDENTIAL": "${user_config.credential}",
+        "CHARTER_GOOGLE_CLIENT_ID": "${user_config.google_client_id}",
+        "CHARTER_GOOGLE_CLIENT_SECRET": "${user_config.google_client_secret}",
+        "CHARTER_DOMAIN_HINT": "${user_config.domain_hint}",
+        "CHARTER_HUBSPOT_CLIENT_ID": "${user_config.hubspot_client_id}"
+      }
+    }
+  },
+  "user_config": {
+    "charter_url": {
+      "type": "string",
+      "title": "Charter bridge URL",
+      "description": "Base URL of your charter bridge deployment (e.g. https://charter.example.com)",
+      "required": true
+    },
+    "credential": {
+      "type": "string",
+      "title": "Charter credential",
+      "description": "Cloudflare Access + API key credential (format: cf-client-id:cf-client-secret:api-key). Get this from your bridge operator.",
+      "sensitive": true,
+      "required": true
+    },
+    "google_client_id": {
+      "type": "string",
+      "title": "Google OAuth client ID",
+      "description": "Your Google OAuth client ID for actor identity (e.g. xxx.apps.googleusercontent.com). Create one at https://console.cloud.google.com/apis/credentials",
+      "required": true
+    },
+    "google_client_secret": {
+      "type": "string",
+      "title": "Google OAuth client secret",
+      "description": "Your Google OAuth client secret (from your Google Cloud console).",
+      "sensitive": true,
+      "required": true
+    },
+    "domain_hint": {
+      "type": "string",
+      "title": "Email domain hint",
+      "description": "Optional: hint the Google sign-in flow to prefer this domain (e.g. @example.com). The server still verifies the actual email.",
+      "required": false
+    },
+    "hubspot_client_id": {
+      "type": "string",
+      "title": "HubSpot OAuth client ID",
+      "description": "Optional: your HubSpot app client ID for HubSpot identity connection.",
+      "required": false
+    }
+  }
+}

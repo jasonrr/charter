@@ -1,0 +1,44 @@
+# Cloud Run service.yaml for Charter
+# Deploy with: gcloud run services replace deploy/service.yaml
+#
+# Rationale for --no-cpu-throttling + min-instances=1:
+# The charter bridge is a low-latency MCP tool endpoint. Cold starts on Cloud Run
+# (2-5s) break the agent's interactive loop. min-instances=1 keeps one instance
+# warm; --no-cpu-throttling lets it handle bursts without CPU ramp-up latency.
+# Cost: ~$5/mo for a 1vCPU/512Mi instance always-on.
+
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: charter
+  annotations:
+    run.googleapis.com/ingress: all
+    run.googleapis.com/execution-environment: gen2
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "1"
+        run.googleapis.com/cpu-throttling: "false"
+        run.googleapis.com/memory: "512Mi"
+        run.googleapis.com/cpu: "1"
+    spec:
+      containerConcurrency: 80
+      containers:
+        - image: gcr.io/PROJECT_ID/charter:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: GCP_PROJECT
+              value: PROJECT_ID
+            - name: GOOGLE_OAUTH_CLIENT_ID
+              value: CLIENT_ID.apps.googleusercontent.com
+            - name: ALLOWED_DOMAIN
+              value: "@example.com"
+          resources:
+            limits:
+              memory: "512Mi"
+              cpu: "1"
+      # Cloudflared sidecar for zero-trust access (optional, replace with your tunnel)
+      # - image: cloudflare/cloudflared:latest
+      #   args: ["tunnel", "--no-autoupdate", "run", "--token", "$(CF_TUNNEL_TOKEN)"]

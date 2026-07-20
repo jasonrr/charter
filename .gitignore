@@ -1,0 +1,13 @@
+.env
+*.pyc
+__pycache__/
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.pytest_cache/
+*.mcpb
+.DS_Store
+*.mcpb
+.pi-subagents/
+.venv/
