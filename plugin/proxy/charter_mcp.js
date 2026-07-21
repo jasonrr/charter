@@ -64,7 +64,12 @@ function credHeaders(env) {
     'CF-Access-Client-Id': env.CHARTER_CF_ACCESS_CLIENT_ID || '',
     'CF-Access-Client-Secret': env.CHARTER_CF_ACCESS_CLIENT_SECRET || '',
   };
-  const [id = '', secret = '', ...key] = cred.split(':');
+  // A colon-free credential is a bare API key (non-Cloudflare deploys) — the
+  // docs promise this works. Anything with colons is the cf-id:cf-secret:api-key
+  // form (>=3 parts); a 2-part value stays malformed -> empty key, fails loudly.
+  const parts = cred.split(':');
+  if (parts.length === 1) return { 'X-API-Key': parts[0], 'CF-Access-Client-Id': '', 'CF-Access-Client-Secret': '' };
+  const [id = '', secret = '', ...key] = parts;
   return { 'X-API-Key': key.join(':'), 'CF-Access-Client-Id': id, 'CF-Access-Client-Secret': secret };
 }
 
@@ -540,6 +545,8 @@ async function selftest() {
   assert(ch3['CF-Access-Client-Id'] === 'abc.access' && ch3['CF-Access-Client-Secret'] === 's3cret' && ch3['X-API-Key'] === 'k3y', 'combined credential split');
   assert(credHeaders({ CHARTER_CREDENTIAL: 'a:b:key:with:colons' })['X-API-Key'] === 'key:with:colons', 'colons in api key survive');
   assert(credHeaders({ CHARTER_CREDENTIAL: 'only-two:parts' })['X-API-Key'] === '', 'malformed credential -> empty key, fails loudly');
+  let chBare = credHeaders({ CHARTER_CREDENTIAL: 'bare-api-key-no-colons' });
+  assert(chBare['X-API-Key'] === 'bare-api-key-no-colons' && chBare['CF-Access-Client-Id'] === '' && chBare['CF-Access-Client-Secret'] === '', 'bare API key (non-Cloudflare) works');
   ch3 = credHeaders({ CHARTER_API_KEY: 'k', CHARTER_CF_ACCESS_CLIENT_ID: 'i', CHARTER_CF_ACCESS_CLIENT_SECRET: 's' });
   assert(ch3['X-API-Key'] === 'k' && ch3['CF-Access-Client-Id'] === 'i' && ch3['CF-Access-Client-Secret'] === 's', 'legacy vars honored');
   assert(credHeaders({ CHARTER_CREDENTIAL: ' a:b:c ', CHARTER_API_KEY: 'legacy' })['X-API-Key'] === 'c', 'combined wins over legacy, trimmed');
