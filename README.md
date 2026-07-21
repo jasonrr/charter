@@ -17,6 +17,23 @@ Charter runs in production at [Radical Candor](https://www.radicalcandor.com),
 which consumes this public engine plus a private pack of its own verbs — the
 same boundary any adopter would use.
 
+## Lean context, better agent performance
+
+Governance is half the story. The other half is that your agent works *better*.
+
+A vendor MCP server loads its entire tool catalog into the agent's context and
+leaves it there — every tool, every turn. Connect five systems and the agent
+wades through a hundred tool schemas on every call, spending tokens and
+attention picking among them before it does any work. The cost grows with every
+system you add.
+
+Charter's context cost is constant: **four tools, no matter how many verbs or
+systems sit behind them** — `charter_call`, `charter_read`, and two auth
+helpers. The agent discovers verbs on demand by calling `verbs.list` (scoped to
+exactly what its key allows), and the business rules ride inside each verb, so
+the agent doesn't reconstruct — or guess wrong about — how an operation works.
+Less context spent on tool sprawl, fewer wrong turns, more room for the task.
+
 ## Why not the vendor's MCP server?
 
 Vendor MCP servers solve connectivity: they get an agent talking to one API.
@@ -40,9 +57,6 @@ whichever account minted it. Charter puts a governed layer in between:
 - **Instant revocation.** Keys are read live from Secret Manager — revoke one
   and it's dead within a minute, no redeploy, no rotating a shared vendor
   token out of every install that holds it.
-- **One surface.** One proxy and one curated verb vocabulary across all your
-  systems, instead of a server per vendor, each dumping dozens of tools into
-  the agent's context.
 
 ## Install
 
