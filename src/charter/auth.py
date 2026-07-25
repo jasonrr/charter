@@ -110,7 +110,10 @@ def allowed(caller, verb):
         if p.endswith("."):
             p += "*"
         return fnmatchcase(verb, p)
-    return any(_match(p) for p in caller["allow"])
+    allow = caller["allow"]
+    if not isinstance(allow, list):
+        return False          # e.g. a JSON string: iterating it would match per-character
+    return any(_match(p) for p in allow)
 
 
 def identify_by_actor(request):

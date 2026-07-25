@@ -388,6 +388,7 @@ def test_oauth_caller_denied_outside_grant(monkeypatch):
     body, status = _parse(main.bridge(FakeRequest(body={"verb": "sync.status"})))
     assert status == 403
     assert body["error"] == "denied"
+    assert any(a[3] == "denied" for a, k in recorded)
 
 
 def test_oauth_caller_attribution_audited(monkeypatch):
@@ -407,3 +408,18 @@ def test_oauth_caller_attribution_audited(monkeypatch):
     caller = recorded[0][0][0]
     assert caller["name"] == "jason@example.com"
     assert caller["interface"] == "oauth"
+
+
+def test_shape_invalid_grants_secret_yields_401_not_500(monkeypatch):
+    # A shape-invalid grants secret (a malformed entry) must fail closed to a
+    # clean 401 through the REAL identify_by_actor -> grants_for chain, never
+    # an uncaught 500 -- this part of bridge() sits outside any try/except.
+    import charter.grants as grants
+    monkeypatch.setattr(main, "identify", lambda req: None)
+    monkeypatch.setattr(auth, "actor_email", lambda req: "jason@example.com")
+    monkeypatch.setattr(main, "actor_email", lambda req: "jason@example.com")
+    monkeypatch.setattr(grants, "_fetch", lambda: {"jason@example.com": "not-a-dict"})
+    grants.reload()
+    body, status = _parse(main.bridge(FakeRequest(body={"verb": "sync.status"})))
+    assert status == 401
+    assert body["error"] == "unauthorized"

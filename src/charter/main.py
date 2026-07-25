@@ -17,6 +17,7 @@ from uuid import uuid4
 import functions_framework
 
 from charter.auth import identify, identify_by_actor, allowed, reload as reload_keys
+from charter.grants import reload as reload_grants
 from charter.audit import record
 from charter.errors import VerbError
 from charter.actor_auth import actor_email
@@ -32,8 +33,9 @@ get_settings()
 
 
 def _reload_keys(body, caller):
-    """admin verb: force a live re-read of charter-keys (no redeploy)."""
+    """admin verb: force a live re-read of charter-keys and charter-grants (no redeploy)."""
     reload_keys()
+    reload_grants()
     return {"reloaded": True}
 
 
