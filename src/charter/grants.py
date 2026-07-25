@@ -1,0 +1,90 @@
+"""Grants: which verbs a named person is granted.
+
+A charter grants powers to named parties; this is that map. The interactive
+(OAuth) path carries no API key, so authorization is derived from the verified
+human identity instead. Grants are a JSON map
+  { "jason@example.com": {"allow": ["data.*", "content.*.draft*"]}, ... }
+read LIVE from Secret Manager (`charter-grants`) and cached for TTL_SECONDS,
+exactly like auth.py's key map. `allow` is the same field name key records use —
+one allow-list syntax (auth.allowed), two ways of being identified.
+
+Fail-closed: an email with no grant returns None, so the caller is None -> 401.
+The CHARTER_GRANTS env var is a cold-start fallback if Secret Manager is briefly
+unreachable at boot.
+
+ponytail: a little duplication with auth.py's cached-secret pattern beats a
+premature shared abstraction across two 30-line loaders.
+"""
+import json
+import time
+import logging
+
+from google.cloud import secretmanager
+
+from charter.settings import get_settings
+
+TTL_SECONDS = 60
+
+_GRANTS = None
+_loaded_at = 0.0
+
+
+def _sm_client():
+    """Lazy Secret Manager client. Reads through module globals so a patched
+    `grants.sm` keeps working; importing this module needs no credentials."""
+    c = globals().get("sm")
+    if c is None:
+        c = globals()["sm"] = secretmanager.SecretManagerServiceClient()
+    return c
+
+
+def __getattr__(name):
+    if name == "sm":
+        return _sm_client()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _secret_path():
+    s = get_settings()
+    return f"projects/{s.gcp_project}/secrets/{s.grants_secret_name}/versions/latest"
+
+
+def _fetch():
+    """Read the latest grants map from Secret Manager (the live source of truth)."""
+    resp = _sm_client().access_secret_version(name=_secret_path())
+    return json.loads(resp.payload.data.decode("utf-8"))
+
+
+def _map():
+    """Cached grants map, refreshed from Secret Manager every TTL_SECONDS.
+
+    A fetch error keeps the last-good map (auth survives a transient Secret
+    Manager blip); only a cold start with no map yet falls back to the
+    CHARTER_GRANTS env var. `_loaded_at` is bumped on every attempt so a
+    persistent outage doesn't hammer Secret Manager on every request.
+    """
+    global _GRANTS, _loaded_at
+    if _GRANTS is None or (time.time() - _loaded_at) > TTL_SECONDS:
+        try:
+            _GRANTS = _fetch()
+        except Exception as e:
+            logging.error("charter grants fetch failed: %s", e)
+            if _GRANTS is None:                       # cold-start fallback
+                _GRANTS = json.loads(
+                    get_settings().charter_grants.get_secret_value() or "{}")
+        _loaded_at = time.time()
+    return _GRANTS
+
+
+def reload():
+    """Force the next _map() to re-fetch from Secret Manager (post-grant-edit)."""
+    global _loaded_at
+    _loaded_at = 0.0
+
+
+def grants_for(email):
+    """Allow-list granted to this email, else None (fail-closed)."""
+    entry = _map().get(email)
+    if entry is None:
+        return None
+    return entry.get("allow")

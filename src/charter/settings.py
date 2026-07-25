@@ -31,6 +31,7 @@ class Settings(BaseSettings):
 
     # Resource names (defaults preserve the pre-settings values).
     keys_secret_name: str = "charter-keys"
+    grants_secret_name: str = "charter-grants"
     google_refresh_secret_name: str = "charter-google-refresh"
     audit_table: str = "charter.audit"  # dataset.table, joined with gcp_project
     # NoDecode: accept CSV from env ("a,b") instead of pydantic's JSON decoding.
@@ -50,6 +51,7 @@ class Settings(BaseSettings):
     # Pre-existing env passthroughs (the seven os.environ reads), SecretStr so
     # repr/str never leak material. All optional; consumers fail as before.
     charter_keys: SecretStr = SecretStr("")       # auth.py cold-start fallback JSON
+    charter_grants: SecretStr = SecretStr("")     # grants.py cold-start fallback JSON
     personal_access_token: SecretStr = SecretStr("")  # airtable pack
     posthog_api_key: SecretStr = SecretStr("")        # posthog pack (reference)
     dropboxsign_token: SecretStr = SecretStr("")      # dropboxsign pack (reference)
