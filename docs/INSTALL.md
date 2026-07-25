@@ -76,6 +76,11 @@ Store the fragment where the engine reads keys — either of:
 
 Save the raw key itself — it is shown once and never stored.
 
+An API key is the headless path. A human signing in via OAuth with no key
+needs a grant instead — see `docs/deployment/grants.md` for creating the
+`charter-grants` secret; without it, an OAuth'd human with no key gets
+`unauthorized` (401).
+
 ## Step 5: Verify the engine (agent-executable)
 
 Start the engine:
