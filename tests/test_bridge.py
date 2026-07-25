@@ -327,3 +327,46 @@ def test_request_id_on_gate_refusals(monkeypatch):
     monkeypatch.setattr(main, "record", lambda *a, **k: None)
     body, status = _parse(main.bridge(FakeRequest(body={"verb": "admin.reload_keys"})))
     assert status == 403 and "request_id" in body
+
+
+# --- OAuth caller: scope derived from verified actor identity (grants) -------
+
+def test_oauth_caller_derived_when_no_api_key(monkeypatch):
+    # No API key, but a verified actor whose email holds a grant.
+    monkeypatch.setattr(main, "identify", lambda req: None)
+    monkeypatch.setattr(main, "identify_by_actor",
+                        lambda req: {"name": "jason@example.com", "interface": "oauth",
+                                     "allow": ["*"], "require_actor": False})
+    monkeypatch.setattr(main, "actor_email", lambda req: "jason@example.com")
+    monkeypatch.setattr(main, "record", lambda *a, **k: None)
+    monkeypatch.setitem(main.VERBS, "sync.status",
+                        (lambda body, caller: {"healthy": True}, "post"))
+    body, status = _parse(main.bridge(FakeRequest(body={"verb": "sync.status"})))
+    assert status == 200
+    assert body["ok"] is True
+
+
+def test_no_key_no_grant_is_401(monkeypatch):
+    # Fail-closed: no API key and no grant -> unauthorized.
+    monkeypatch.setattr(main, "identify", lambda req: None)
+    monkeypatch.setattr(main, "identify_by_actor", lambda req: None)
+    body, status = _parse(main.bridge(FakeRequest(body={"verb": "sync.status"})))
+    assert status == 401
+    assert body["error"] == "unauthorized"
+
+
+def test_api_key_takes_precedence_over_actor(monkeypatch):
+    # A valid API key wins; identify_by_actor is not consulted.
+    monkeypatch.setattr(main, "identify",
+                        lambda req: {"name": "cron", "interface": "cron", "allow": ["*"]})
+    called = {"n": 0}
+    monkeypatch.setattr(main, "identify_by_actor",
+                        lambda req: called.__setitem__("n", called["n"] + 1))
+    monkeypatch.setattr(main, "allowed", lambda caller, verb: True)
+    monkeypatch.setattr(main, "actor_email", lambda req: None)
+    monkeypatch.setattr(main, "record", lambda *a, **k: None)
+    monkeypatch.setitem(main.VERBS, "sync.status",
+                        (lambda body, caller: {"healthy": True}, "post"))
+    body, status = _parse(main.bridge(FakeRequest(body={"verb": "sync.status"})))
+    assert status == 200
+    assert called["n"] == 0  # actor derivation skipped when a key is present

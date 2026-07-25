@@ -16,7 +16,7 @@ from uuid import uuid4
 
 import functions_framework
 
-from charter.auth import identify, allowed, reload as reload_keys
+from charter.auth import identify, identify_by_actor, allowed, reload as reload_keys
 from charter.audit import record
 from charter.errors import VerbError
 from charter.actor_auth import actor_email
@@ -107,7 +107,9 @@ def bridge(request):
     body = request.get_json(silent=True) or {}
     verb = body.get("verb", "")
     target = _target(body)                     # computed once; reused by every branch
-    caller = identify(request)                 # missing/unknown key -> None
+    caller = identify(request)                 # X-API-Key -> caller (headless)
+    if caller is None:                         # no key: try the OAuth identity path
+        caller = identify_by_actor(request)    # verified actor + grants
     if caller is None:
         return _json({"ok": False, "error": "unauthorized", "request_id": rid}, 401)
     if not _can(caller, verb):
