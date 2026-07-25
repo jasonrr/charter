@@ -109,6 +109,8 @@ def bridge(request):
     target = _target(body)                     # computed once; reused by every branch
     caller = identify(request)                 # X-API-Key -> caller (headless)
     if caller is None:                         # no key: try the OAuth identity path
+        # ponytail: an unknown key is treated as no key. Revoking a key does
+        # not revoke a human's grant -- revoke that in charter-grants.
         caller = identify_by_actor(request)    # verified actor + grants
     if caller is None:
         return _json({"ok": False, "error": "unauthorized", "request_id": rid}, 401)

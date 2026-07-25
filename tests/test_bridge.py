@@ -1,6 +1,7 @@
 import json
 
 import charter.main as main
+import charter.auth as auth
 
 
 class FakeRequest:
@@ -370,3 +371,39 @@ def test_api_key_takes_precedence_over_actor(monkeypatch):
     body, status = _parse(main.bridge(FakeRequest(body={"verb": "sync.status"})))
     assert status == 200
     assert called["n"] == 0  # actor derivation skipped when a key is present
+
+
+def test_oauth_caller_denied_outside_grant(monkeypatch):
+    # End-to-end through the REAL identify_by_actor (not monkeypatched): a
+    # granted email is denied a verb outside its allow-list, via the real
+    # _can/allowed fnmatch check.
+    monkeypatch.setattr(main, "identify", lambda req: None)
+    monkeypatch.setattr(auth, "actor_email", lambda req: "jason@example.com")
+    monkeypatch.setattr(auth, "grants_for", lambda email: ["data.*"])
+    monkeypatch.setattr(main, "actor_email", lambda req: "jason@example.com")
+    recorded = []
+    monkeypatch.setattr(main, "record", lambda *a, **k: recorded.append((a, k)))
+    monkeypatch.setitem(main.VERBS, "sync.status",
+                        (lambda body, caller: {"healthy": True}, "post"))
+    body, status = _parse(main.bridge(FakeRequest(body={"verb": "sync.status"})))
+    assert status == 403
+    assert body["error"] == "denied"
+
+
+def test_oauth_caller_attribution_audited(monkeypatch):
+    # End-to-end through the REAL identify_by_actor: the audited caller
+    # record attributes the OAuth principal correctly (name = email,
+    # interface = "oauth").
+    monkeypatch.setattr(main, "identify", lambda req: None)
+    monkeypatch.setattr(auth, "actor_email", lambda req: "jason@example.com")
+    monkeypatch.setattr(auth, "grants_for", lambda email: ["*"])
+    monkeypatch.setattr(main, "actor_email", lambda req: "jason@example.com")
+    recorded = []
+    monkeypatch.setattr(main, "record", lambda *a, **k: recorded.append((a, k)))
+    monkeypatch.setitem(main.VERBS, "sync.status",
+                        (lambda body, caller: {"healthy": True}, "post"))
+    body, status = _parse(main.bridge(FakeRequest(body={"verb": "sync.status"})))
+    assert status == 200
+    caller = recorded[0][0][0]
+    assert caller["name"] == "jason@example.com"
+    assert caller["interface"] == "oauth"
