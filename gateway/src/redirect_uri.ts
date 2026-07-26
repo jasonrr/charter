@@ -26,6 +26,11 @@
 /** Hosts that can only ever reach the machine the browser is running on. */
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 
+/** True for a host that resolves only on the caller's own machine. */
+export function isLoopbackHost(host: string): boolean {
+  return LOOPBACK_HOSTS.has(host.toLowerCase());
+}
+
 export type Verdict = { allowed: true } | { allowed: false; reason: string };
 
 /**
@@ -79,7 +84,7 @@ export function classifyRedirectUri(
   // rather than sneaking through a raw string comparison.
   const host = u.hostname.toLowerCase();
 
-  if (LOOPBACK_HOSTS.has(host)) {
+  if (isLoopbackHost(host)) {
     if (u.protocol !== "http:" && u.protocol !== "https:") {
       return { allowed: false, reason: "loopback must use http or https" };
     }

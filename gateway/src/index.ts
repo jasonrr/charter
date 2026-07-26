@@ -44,6 +44,13 @@ import {
   parseExtraOrigins,
   screenRedirectUris,
 } from "./redirect_uri.js";
+import { gatewayOrigin, gatewayUrlProblem } from "./gateway_url.js";
+import {
+  MCP_PATH,
+  protectedResourceMetadata,
+  protectedResourceOf,
+  resourceMetadataUrl,
+} from "./prm.js";
 import {
   clearStateCookie,
   importStateKey,
@@ -114,6 +121,9 @@ function missingConfig(env: Env): string[] {
       "GOOGLE_CLIENT_SECRET",
       "OAUTH_STATE_SECRET",
       "CHARTER_ALLOWED_DOMAIN",
+      // Unset, it silently disables redirect-URI screening's whole point; the
+      // shapes it can be wrong in *besides* unset are gatewayUrlProblem's job.
+      "CHARTER_GATEWAY_URL",
     ] as const
   ).filter((name) => !env[name]);
 }
@@ -342,6 +352,23 @@ const authHandler = {
       );
     }
 
+    // Set but wrong is the quieter failure, and the only place it shows up is
+    // here, against the origin a request actually arrived on. See gateway_url.ts.
+    if (isAuthRoute(url.pathname)) {
+      const problem = gatewayUrlProblem(
+        env.CHARTER_GATEWAY_URL,
+        request.url,
+        parseExtraOrigins(env.CHARTER_EXTRA_REDIRECT_ORIGINS),
+      );
+      if (problem) {
+        return browserError(
+          `charter-gateway is misconfigured; sign-in is disabled.\n\n${problem}\n\n` +
+            "See docs/deployment/gateway.md.",
+          503,
+        );
+      }
+    }
+
     if (url.pathname === "/authorize") {
       let state: string;
       let flow: Flow;
@@ -559,7 +586,18 @@ const authHandler = {
       });
     }
 
-    return new Response("charter-gateway", { status: 200 });
+    // "/" identifies the deployment to a human who lands on it. Everything
+    // else is 404, not a cheerful 200: this handler is the provider's
+    // catch-all, so it is what answered `/.well-known/oauth-protected-resource`
+    // — an unparseable 200 where a client expected metadata or a 404, which is
+    // how the missing PRM endpoint (prm.ts) stayed invisible.
+    if (url.pathname === "/") {
+      return new Response("charter-gateway", { status: 200 });
+    }
+    return new Response("not found", {
+      status: 404,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
   },
 };
 
@@ -582,26 +620,6 @@ function oauthError(error: string, description: string, status: number): Respons
     status,
     headers: { "Content-Type": "application/json" },
   });
-}
-
-/**
- * The origin `screenRegistration` treats as "this gateway", pinned to
- * `CHARTER_GATEWAY_URL` rather than the incoming request's Host.
- *
- * A Worker can receive a request for a Host it was never meant to answer —
- * see the field comment on Env. Reading the origin off `request.url` there
- * let a registration made under an off-canonical Host get that host
- * whitelisted as "the gateway" permanently: nothing at /callback re-derives
- * or re-checks it against the current request (it only checks the registered
- * client's own redirectUris list), so the acceptance made at registration
- * time is the only gate that ever runs.
- */
-function gatewayOrigin(env: Env): string {
-  try {
-    return new URL(env.CHARTER_GATEWAY_URL).origin;
-  } catch {
-    return "";
-  }
 }
 
 /**
@@ -630,7 +648,13 @@ async function screenRegistration(
   const requested = (body as { redirect_uris?: unknown }).redirect_uris;
   if (requested === undefined) return null; // the provider will reject it
 
-  const origin = gatewayOrigin(env);
+  // Pinned to CHARTER_GATEWAY_URL, never the incoming request's Host: a Worker
+  // can receive a request for a Host it was never meant to answer (see the
+  // field comment on Env), and reading the origin off `request.url` here let a
+  // registration made under an off-canonical Host get that host whitelisted as
+  // "the gateway" permanently — nothing at /callback re-derives or re-checks
+  // it, so this acceptance is the only gate that ever runs.
+  const origin = gatewayOrigin(env.CHARTER_GATEWAY_URL);
   if (!origin) {
     return oauthError(
       "server_error",
@@ -674,15 +698,90 @@ async function screenRegistration(
   );
 }
 
+/**
+ * Public, unauthenticated metadata, so any origin may read it — matching what
+ * the provider already does for /.well-known/oauth-authorization-server.
+ */
+function metadataResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+    },
+  });
+}
+
+/**
+ * Add RFC 9728's `resource_metadata` to a 401 from the MCP endpoint.
+ *
+ * This is discovery mechanism 1 (prm.ts). The well-known paths alone would
+ * satisfy the spec, but the header saves a client two probe round-trips and is
+ * the mechanism clients reach for first. Applied out here rather than inside
+ * `unauthorized()` because most 401s on /mcp come from the OAuth provider's own
+ * token check, never reaching our handler — a header on only half of them
+ * would be worse than none.
+ */
+function withResourceMetadata(res: Response, origin: string): Response {
+  const headers = new Headers(res.headers);
+  const existing = headers.get("WWW-Authenticate");
+  if (existing?.includes("resource_metadata=")) return res;
+  const param = `resource_metadata="${resourceMetadataUrl(origin)}"`;
+  headers.set(
+    "WWW-Authenticate",
+    existing ? `${existing}, ${param}` : `Bearer ${param}`,
+  );
+  return new Response(res.body, {
+    status: res.status,
+    statusText: res.statusText,
+    headers,
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    if (
-      request.method === "POST" &&
-      new URL(request.url).pathname === "/register"
-    ) {
+    const url = new URL(request.url);
+    const origin = gatewayOrigin(env.CHARTER_GATEWAY_URL);
+
+    // RFC 9728 protected-resource metadata (prm.ts). Served ahead of the
+    // provider because it describes the MCP endpoint rather than the sign-in
+    // flow, and because an unconfigured origin must not be published as fact.
+    const resourcePath = protectedResourceOf(url.pathname);
+    if (resourcePath !== null) {
+      if (request.method === "OPTIONS") {
+        return new Response(null, {
+          status: 204,
+          headers: {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "86400",
+          },
+        });
+      }
+      if (!origin) {
+        return metadataResponse(
+          {
+            error: "server_error",
+            error_description:
+              "charter-gateway is not configured with a valid " +
+              "CHARTER_GATEWAY_URL, so it cannot state its own resource identity.",
+          },
+          500,
+        );
+      }
+      return metadataResponse(protectedResourceMetadata(origin, resourcePath));
+    }
+
+    if (request.method === "POST" && url.pathname === "/register") {
       const screened = await screenRegistration(request, env, ctx);
       if (screened) return screened;
     }
-    return provider.fetch(request, env, ctx);
+
+    const res = await provider.fetch(request, env, ctx);
+    if (res.status === 401 && url.pathname === MCP_PATH && origin) {
+      return withResourceMetadata(res, origin);
+    }
+    return res;
   },
 };

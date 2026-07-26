@@ -12,10 +12,17 @@
     "GOOGLE_CLIENT_ID": "",
     // This gateway's own canonical origin — replace with the real hostname
     // you deploy to. Pins which redirect URIs a dynamically registered
-    // client may claim as "this gateway" (src/index.ts's screenRegistration);
+    // client may claim as "this gateway" (src/index.ts's screenRegistration)
+    // and what the gateway publishes as its resource identity (src/prm.ts);
     // deliberately not read off the incoming request. See
     // docs/deployment/gateway.md.
-    "CHARTER_GATEWAY_URL": "https://charter-gateway.example.workers.dev",
+    //
+    // The placeholder is under example.com, which IANA reserves and nobody can
+    // register, NOT under workers.dev: leaving an unedited workers.dev
+    // placeholder in place would let whoever registers that subdomain have
+    // redirect URIs on it accepted as "this gateway". Sign-in refuses to run
+    // until this matches the origin requests arrive on (src/gateway_url.ts).
+    "CHARTER_GATEWAY_URL": "https://charter-gateway.example.com",
     // Extra https origins a client may register a redirect URI on, beyond
     // loopback and this gateway. Comma-separated; empty means closed.
     // e.g. "https://vscode.dev,https://insiders.vscode.dev" for VS Code's
