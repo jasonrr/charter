@@ -423,7 +423,7 @@ def test_shape_invalid_grants_secret_yields_401_not_500(monkeypatch):
     monkeypatch.setattr(main, "identify", lambda req: None)
     monkeypatch.setattr(auth, "actor_email", lambda req: "jason@example.com")
     monkeypatch.setattr(main, "actor_email", lambda req: "jason@example.com")
-    monkeypatch.setattr(grants, "_fetch", lambda: {"jason@example.com": "not-a-dict"})
+    monkeypatch.setattr(grants._MAP, "_fetch", lambda: {"jason@example.com": "not-a-dict"})
     grants.reload()
     body, status = _parse(main.bridge(FakeRequest(body={"verb": "sync.status"})))
     assert status == 401
@@ -487,7 +487,7 @@ def test_non_string_allow_element_yields_401_not_500(monkeypatch):
     monkeypatch.setattr(main, "identify", lambda req: None)
     monkeypatch.setattr(auth, "actor_email", lambda req: "jason@example.com")
     monkeypatch.setattr(main, "actor_email", lambda req: "jason@example.com")
-    monkeypatch.setattr(grants, "_fetch",
+    monkeypatch.setattr(grants._MAP, "_fetch",
                         lambda: {"jason@example.com": {"allow": [["*"]]}})
     grants.reload()
     body, status = _parse(main.bridge(FakeRequest(body={"verb": "sync.status"})))

@@ -9,77 +9,28 @@ The map is read LIVE from Secret Manager (`charter-keys` by default) and cached
 for TTL_SECONDS, so add/rotate/revoke takes effect within the TTL with no redeploy.
 `reload()` (exposed via the admin.reload_keys verb) forces an immediate refresh.
 The CHARTER_KEYS env var is a cold-start fallback if Secret Manager is briefly
-unreachable at boot.
+unreachable at boot. Loader and fail-closed handling live in charter.secret_map,
+shared with the grants map.
 """
-import json
-import time
 import hashlib
 import logging
 from fnmatch import fnmatchcase
 
-from google.cloud import secretmanager
-
-from charter.settings import get_settings
+from charter.secret_map import SecretMap
 from charter.actor_auth import actor_email
 from charter.grants import grants_for
 
-TTL_SECONDS = 60
-
-_KEYS = None
-_loaded_at = 0.0
-
-
-def _sm_client():
-    """Lazy Secret Manager client. Reads through module globals so a patched
-    `auth.sm` keeps working; importing this module needs no credentials."""
-    c = globals().get("sm")
-    if c is None:
-        c = globals()["sm"] = secretmanager.SecretManagerServiceClient()
-    return c
-
-
-def __getattr__(name):
-    if name == "sm":
-        return _sm_client()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-def _secret_path():
-    s = get_settings()
-    return f"projects/{s.gcp_project}/secrets/{s.keys_secret_name}/versions/latest"
-
-
-def _fetch():
-    """Read the latest key map from Secret Manager (the live source of truth)."""
-    resp = _sm_client().access_secret_version(name=_secret_path())
-    return json.loads(resp.payload.data.decode("utf-8"))
+_MAP = SecretMap("charter keys", "keys_secret_name", "charter_keys")
 
 
 def _keys():
-    """Cached key map, refreshed from Secret Manager every TTL_SECONDS.
-
-    A fetch error keeps the last-good map (auth survives a transient Secret
-    Manager blip); only a cold start with no map yet falls back to the
-    CHARTER_KEYS env var. `_loaded_at` is bumped on every attempt so a
-    persistent outage doesn't hammer Secret Manager on every request.
-    """
-    global _KEYS, _loaded_at
-    if _KEYS is None or (time.time() - _loaded_at) > TTL_SECONDS:
-        try:
-            _KEYS = _fetch()
-        except Exception as e:
-            logging.error("charter keys fetch failed: %s", e)
-            if _KEYS is None:                       # cold-start fallback
-                _KEYS = json.loads(
-                    get_settings().charter_keys.get_secret_value() or "{}")
-        _loaded_at = time.time()
-    return _KEYS
+    """The cached key map (see charter.secret_map for TTL, fallback, fail-closed)."""
+    return _MAP.get()
 
 
 def reload():
     """Force the next _keys() to re-fetch from Secret Manager (post-rotation)."""
-    global _loaded_at
-    _loaded_at = 0.0
+    _MAP.reload()
 
 
 def identify(request):
@@ -137,8 +88,8 @@ def identify_by_actor(request):
       (None, email)   — verified email with NO grant: still a known human, so
                         the dispatcher audits the attempt before its 401
       (None, None)    — no actor token at all: nothing to attribute
-    A present-but-invalid token raises VerbError(401, "actor_invalid") through
-    (forged, replayed, expired, wrong-aud), so the keyless path logs and
+    A present-but-invalid token — forged, replayed, expired, wrong-aud — raises
+    VerbError(401, "actor_invalid") through, so the keyless path audits it and
     answers exactly as the key path does instead of going silent.
 
     This runs ONLY when identify() found no API key; the X-API-Key path is

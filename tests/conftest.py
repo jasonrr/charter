@@ -10,6 +10,8 @@ os.environ.setdefault("ALLOWED_DOMAIN", "@example.com")
 
 from charter import identity_context
 from charter import settings as settings_mod
+from charter import auth as auth_mod
+from charter import grants as grants_mod
 
 
 @pytest.fixture(autouse=True)
@@ -17,6 +19,17 @@ def _reset_identity_context():
     # pytest runs tests on one reused thread; contextvars persist across tests
     # without this. Reset to the "outside a request / machine caller" state.
     identity_context.begin(None, False)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_secret_maps():
+    # The keys and grants maps are process-cached for a TTL; without this, a map
+    # one test seeded leaks into the next as order-dependent scope, and the
+    # cold-start branch (no map yet) is unreachable after any earlier test
+    # loaded one.
+    auth_mod._MAP.reset()
+    grants_mod._MAP.reset()
     yield
 
 

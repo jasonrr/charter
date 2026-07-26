@@ -8,7 +8,7 @@ from charter import settings as settings_mod
 
 def _seed(monkeypatch, mapping):
     # Bypass Secret Manager: stub the fetch and force a reload.
-    monkeypatch.setattr(grants, "_fetch", lambda: mapping)
+    monkeypatch.setattr(grants._MAP, "_fetch", lambda: mapping)
     grants.reload()
 
 
@@ -23,11 +23,8 @@ def test_ungranted_email_gets_none(monkeypatch):
 
 
 def test_fetch_error_cold_start_uses_env_fallback(monkeypatch):
-    # _GRANTS persists across tests; reset it so the cold-start branch
-    # (_GRANTS is None) is actually reached here instead of short-circuiting
-    # to the last-good map left behind by an earlier test.
-    monkeypatch.setattr(grants, "_GRANTS", None)
-
+    # The cold-start branch (no map cached yet) is reachable because conftest's
+    # autouse _reset_secret_maps clears it before every test.
     monkeypatch.setenv("CHARTER_GRANTS",
                        json.dumps({"sam@example.com": {"allow": ["*"]}}))
     settings_mod.get_settings.cache_clear()
@@ -35,7 +32,7 @@ def test_fetch_error_cold_start_uses_env_fallback(monkeypatch):
     def boom():
         raise RuntimeError("secret manager down")
 
-    monkeypatch.setattr(grants, "_fetch", boom)
+    monkeypatch.setattr(grants._MAP, "_fetch", boom)
     grants.reload()
     assert grants.grants_for("sam@example.com") == ["*"]
 
@@ -47,7 +44,7 @@ def test_fetch_error_keeps_last_good(monkeypatch):
     def boom():
         raise RuntimeError("transient blip")
 
-    monkeypatch.setattr(grants, "_fetch", boom)
+    monkeypatch.setattr(grants._MAP, "_fetch", boom)
     grants.reload()  # forces re-fetch; fetch fails, last-good map must survive
     assert grants.grants_for("jason@example.com") == ["data.*"]
 
@@ -132,10 +129,9 @@ def test_top_level_array_from_secret_yields_no_scope(monkeypatch):
     # Secret Manager returning a top-level JSON array (wrong shape) must not
     # raise (an AttributeError from treating a list like a dict); it's treated
     # like a fetch failure and yields no scope.
-    monkeypatch.setattr(grants, "_GRANTS", None)
     monkeypatch.setenv("CHARTER_GRANTS", "{}")
     settings_mod.get_settings.cache_clear()
-    monkeypatch.setattr(grants, "_fetch", lambda: ["jason@example.com"])
+    monkeypatch.setattr(grants._MAP, "_fetch", lambda: ["jason@example.com"])
     grants.reload()
     assert grants.grants_for("jason@example.com") is None
 
@@ -143,14 +139,13 @@ def test_top_level_array_from_secret_yields_no_scope(monkeypatch):
 def test_malformed_charter_grants_cold_start_yields_no_scope(monkeypatch):
     # Cold-start fallback: malformed JSON in CHARTER_GRANTS must not raise;
     # it must fail closed to no scope.
-    monkeypatch.setattr(grants, "_GRANTS", None)
     monkeypatch.setenv("CHARTER_GRANTS", "{not valid json")
     settings_mod.get_settings.cache_clear()
 
     def boom():
         raise RuntimeError("secret manager down")
 
-    monkeypatch.setattr(grants, "_fetch", boom)
+    monkeypatch.setattr(grants._MAP, "_fetch", boom)
     grants.reload()
     assert grants.grants_for("jason@example.com") is None
 
