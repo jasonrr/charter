@@ -45,10 +45,12 @@ locked out until they switch to the gateway.
 
 Requires `wrangler` **4.x or later** — `gateway/package.json` pins `4.107.0`.
 Wrangler 3's bundled `workerd` predates `cloudflare:email`, which the `agents`
-package imports, so the Worker fails to start; it also silently rewrites the
-`compatibility_date` in `wrangler.jsonc` down to `2025-07-18`. Always invoke it
-via `npx wrangler` (or `npm run deploy`) from `gateway/` so it resolves the
-pinned version rather than whatever is on `PATH`.
+package imports, so the Worker fails to start; it also silently falls back to
+`compatibility_date` `2025-07-18` at runtime (`wrangler.jsonc` itself is left
+unchanged on disk — the fallback only affects what the Worker actually runs
+with). Always invoke it via `npx wrangler` (or `npm run deploy`) from
+`gateway/` so it resolves the pinned version rather than whatever is on
+`PATH`.
 
     cd gateway
     npx wrangler kv namespace create OAUTH_KV
@@ -139,7 +141,9 @@ here.
   because the re-mint result is discarded, a rotation ends the session at
   "sign in again" with no in-place recovery. The fix is
   `OAuthProvider`'s `tokenExchangeCallback`, which writes props back after a
-  refresh; see the `ponytail:` note at `gateway/src/index.ts:105-114`.
+  refresh; see the `ponytail:` note in `buildServer`'s `run` closure in
+  `gateway/src/index.ts`, just above the `freshIdToken` call ("freshIdToken
+  returns a rotated identity and we discard it...").
 - **The OAuth `state` is unsigned and not bound to a browser session.** An
   attacker who observes a victim's in-flight `state` (e.g. from a shared
   clipboard, a logged URL, or a browser history sync) can replay it with
