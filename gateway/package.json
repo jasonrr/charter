@@ -1,0 +1,24 @@
+{
+  "name": "charter-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "agents": "0.2.35",
+    "@cloudflare/workers-oauth-provider": "0.0.5",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "4.20260702.1",
+    "typescript": "5.9.3",
+    "vitest": "2.1.9",
+    "wrangler": "3.114.17"
+  }
+}

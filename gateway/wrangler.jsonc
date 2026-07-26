@@ -1,0 +1,14 @@
+{
+  "name": "charter-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "kv_namespaces": [
+    { "binding": "OAUTH_KV", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }
+  ],
+  "vars": {
+    "CHARTER_CORE_URL": "https://charter.example.com",
+    "CHARTER_ALLOWED_DOMAIN": "@example.com",
+    "GOOGLE_CLIENT_ID": ""
+  }
+}
