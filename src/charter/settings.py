@@ -56,8 +56,16 @@ class Settings(BaseSettings):
     posthog_api_key: SecretStr = SecretStr("")        # posthog pack (reference)
     dropboxsign_token: SecretStr = SecretStr("")      # dropboxsign pack (reference)
     dropboxsign_template_id: str = ""
-    test_mode: str = ""
-    test_mode_email: str = ""
+
+    @field_validator("allowed_domain")
+    @classmethod
+    def _anchor_domain(cls, v: str) -> str:
+        # actor_auth matches with email.endswith(allowed_domain); without a
+        # leading "@" that suffix check accepts anyone@evil-example.com for
+        # ALLOWED_DOMAIN=example.com. Normalize here so every construction
+        # path gets the anchored form.
+        v = v.strip()
+        return v if v.startswith("@") else f"@{v}"
 
     @field_validator("warehouse_datasets", "packs", mode="before")
     @classmethod

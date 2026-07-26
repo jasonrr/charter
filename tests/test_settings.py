@@ -46,6 +46,16 @@ def test_each_required_field_is_named(monkeypatch):
     assert "allowed_domain" in str(e.value)
 
 
+def test_allowed_domain_is_anchored_with_at(monkeypatch):
+    """A bare domain normalizes to @domain — actor_auth's endswith() suffix
+    match must never accept anyone@evil-example.com for example.com."""
+    _set_required(monkeypatch)
+    monkeypatch.setenv("ALLOWED_DOMAIN", "example.com")
+    assert Settings(_env_file=None).allowed_domain == "@example.com"
+    monkeypatch.setenv("ALLOWED_DOMAIN", "@example.com")
+    assert Settings(_env_file=None).allowed_domain == "@example.com"
+
+
 def test_env_values_resolve_identically_to_former_literals(monkeypatch):
     """Former module-top literals now resolve from env with the same runtime value."""
     monkeypatch.setenv("GCP_PROJECT", "charter-fixture")
@@ -105,8 +115,6 @@ def test_env_passthrough_fields_default_empty(monkeypatch):
     assert s.charter_keys.get_secret_value() == ""
     assert s.personal_access_token.get_secret_value() == ""
     assert s.posthog_api_key.get_secret_value() == ""
-    assert s.test_mode == ""
-    assert s.test_mode_email == ""
 
 
 # --- get_settings caching -------------------------------------------------------
