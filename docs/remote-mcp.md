@@ -225,6 +225,43 @@ verb returns those (plus a preview) instead of printing them.
 `ponytail:` adopt the standard (reference-in, threshold-linked-out); no bespoke
 blob store, no per-payload special cases.
 
+### 4.6 The actor token across the seam (added 2026-07-25, planning B)
+
+§4.1 says the gateway forwards "a verified Google ID token" and core verifies it.
+Reading `actor_auth.py` while planning B surfaced three things that decision
+implies but never stated. All three are locked here.
+
+**Audience.** `actor_email()` verifies the token against
+`settings.google_oauth_client_id` (`actor_auth.py:40-42`) — a strict `aud` check.
+A token minted for the *proxy's* desktop client will not verify at core once the
+gateway mints its own. **Decision:** core's `google_oauth_client_id` is repointed
+to the gateway's Google **Web application** client, and the desktop client is
+retired with the proxy in D. No multi-audience list: one gateway, one client.
+`ponytail:` a list of accepted audiences is the thing to build when a second
+gateway exists, not before. This makes B and D a single release — until D lands,
+repointing breaks the proxy, which is acceptable only because there are no
+adopters (§7.1).
+
+**Freshness.** Google ID tokens live ~1 hour; an MCP session outlives that. The
+gateway therefore requests `openid email` **with offline access**, keeps the
+Google **refresh token** in the encrypted OAuth props that
+`workers-oauth-provider` already persists, and re-mints an ID token when the
+cached one is within a minute of `exp`. The client's own MCP token is unaffected
+— it is the gateway's, on the gateway's lifetime. **Core still verifies Google
+itself, so invariant 1 (§2.1) holds**: the gateway relays an unforgeable token,
+it does not assert identity.
+
+**`charter_connect_hubspot` cannot be ported as-is.** §4.2 said the surface is
+"the four tools minus `charter_login`" — but the HubSpot connect tool is *also* a
+local flow: it opens a loopback listener on `127.0.0.1:53682`
+(`charter_mcp.js:36`, `HS_CONNECT_PORT`) and hands the resulting code to the
+`identity.hs.connect` verb. A remote gateway has no loopback. It needs a second
+federated OAuth flow, hosted at a gateway redirect URI. **Out of scope for B** —
+B ships `charter_read` and `charter_call`, and the HubSpot connect is planned
+separately once B's federation pattern is proven. Verbs that need a HubSpot
+identity return `hs_identity_required` until then, exactly as they do today for
+an unconnected user.
+
 ## 5. The gateway's reference implementation
 
 **Decided: a Cloudflare Worker running a maintained MCP SDK, with OAuth from a
@@ -249,8 +286,13 @@ point release.
   `InputRequiredResult` + client retry.
 - **Removed:** HTTP GET endpoint (`405`), SSE resumability/`Last-Event-ID`,
   `ping`, `logging/setLevel`. `resources/subscribe` → `subscriptions/listen`.
-- **Dual-era** — Modern↔Legacy fails in *both* directions, so serving both eras
-  on one endpoint (which the spec permits) is the only non-disruptive posture.
+- **Dual-era comes free from the SDK** — ~~Modern↔Legacy fails in *both*
+  directions~~. Corrected 2026-07-25 against the SDK-beta announcement: both
+  directions negotiate automatically. "A v2 server answers the legacy
+  `initialize` handshake alongside `server/discover`, so clients on `2025-11-25`
+  keep connecting," and "clients that speak `2026-07-28` fall back to the
+  `initialize` handshake when they reach a server on `2025-11-25` or earlier."
+  Dual-era is a property of the SDK, not engineering charter has to do.
 - **Auth is the stable part** — RFC 9728 PRM, RFC 8707 audience validation, PKCE
   `S256`, and the no-token-passthrough rule all carry over unchanged. New:
   publish `code_challenge_methods_supported`; RFC 9207 `iss` (SHOULD); DCR
@@ -269,9 +311,32 @@ for single tenant.
 **This choice is scoped to the reference implementation** (§2.2) — it is not a
 requirement charter imposes on adopters, and it does not affect core.
 
-**Caution:** the draft was still moving after the RC announcement (the DCR
-deprecation landed later). Re-diff the changelog after the 2026-07-28 freeze
-before building.
+**The 2026-07-28 date is a publication date, not a gate.** The release candidate
+has been *locked since 2026-05-21*; July 28 is when the final text publishes.
+Beta SDKs shipped against the locked RC — TypeScript v2 is two new packages,
+`@modelcontextprotocol/server` and `@modelcontextprotocol/client`, both at
+`2.0.0-beta.1` (the v1 `@modelcontextprotocol/sdk` package stays on v1). Serving
+`2026-07-28` is opt-in at the transport wiring, not a side effect of upgrading.
+So B is not blocked on a freeze — re-diff the published changelog when it lands,
+but build before it.
+
+**Which revision B ships on — the real question, and it is not ours to force.**
+Cloudflare's `agents` stack (`createMcpHandler`, `OAuthProvider`) documents the
+v1 MCP SDK (`McpServer`, "since 1.26.0"); as of 2026-07-25 there is no published
+evidence it accepts the v2 split packages. Since dual-era negotiation is
+automatic in *both* directions (above), shipping B on **2025-11-25** costs
+nothing: `2026-07-28` clients fall back and keep working. So B targets whatever
+revision the Cloudflare stack speaks on the day it is built, and the
+`2026-07-28` surface (`server/discover`, routable headers, `resultType`,
+`ttlMs`/`cacheScope`, MRTR) arrives with the SDK upgrade rather than being
+hand-rolled. `ponytail:` let the SDK own the transport era; that was the whole
+reason for choosing a maintained SDK in §5.
+
+**Stateless, no Durable Object.** `createMcpHandler` serves MCP from a plain
+Worker; `McpAgent` (a Durable Object per session) is only needed for per-session
+state or legacy SSE, and the gateway has neither — it holds one credential and
+translates. Construct a fresh `McpServer` per request (SDK ≥1.26.0 guards
+against reconnecting one).
 
 ## 6. Sub-projects
 
@@ -280,7 +345,7 @@ Broken per the writing-plans scope check; each ships and tests on its own.
 | | Sub-project | Depends on | Detailed plan |
 |---|---|---|---|
 | **A** | **Core: grants** — `identify_by_actor` + grants loader, fail-closed | nothing | **written** (`plans/2026-07-25-remote-mcp-grants.md`) |
-| **B** | **Gateway** — MCP over Streamable HTTP (2026-07-28, dual-era) + OAuth federating Google; translates to core | A, §5 ✓ | after A lands |
+| **B** | **Gateway** — MCP over Streamable HTTP + OAuth federating Google; translates to core. Ships on whichever revision the SDK speaks; dual-era is automatic (§5) | A ✓, §5 ✓ | next |
 | **C** | **Payload contract** — adopt reference-in / resource-link-out (§4.5); inline blog+email, podcast takes a Drive reference; document in the pack-authoring skill | measurement ✓ | scoped by §4.5 |
 | **D** | **Distribution repackage + proxy removal** — plugin becomes a remote-HTTP pointer (`{"type":"http"}`) carrying skills; **delete** `plugin/proxy/` and `desktop-extension/`; update `INSTALL.md`/`distribution.md` | B | after B works |
 
@@ -290,8 +355,16 @@ gateway's only contract with core is "present a valid Google ID token + the
 gateway credential." Core verifies the token itself (§2.1).
 
 **Sequencing:** A is shippable now and de-risks everything (it's the auth model),
-and it is pure core work — unaffected by any MCP spec churn. Then B, after the
-2026-07-28 freeze. C and D follow B.
+and it is pure core work — unaffected by any MCP spec churn. **A landed
+2026-07-25.** Then B — *not* gated on 2026-07-28, which is a publication date
+against an RC locked since 2026-05-21 (§5). D follows B.
+
+**C splits, and only half of it waits.** The table's "depends on: measurement ✓"
+and the old "C and D follow B" disagreed; the resolution is that C is two
+contracts. *Reference-in* (large args by URI/id, dereferenced inside the verb)
+is core- and pack-side, independent of the gateway, and shippable alongside or
+before B. *Resource-link-out* is emitted in MCP content blocks by the gateway, so
+that half needs B. Split C when it is planned.
 
 ## 7. Deprecation and non-goals
 
@@ -344,5 +417,22 @@ accepts both. `ponytail:` don't build it until something actually needs it.
   [draft/basic/authorization](https://modelcontextprotocol.io/specification/draft/basic/authorization).
 - OAuth model: PostHog plugin as the reference shape
   (`.mcp.json` `{"type":"http", "url":"https://mcp.posthog.com/mcp"}` + OAuth).
+- Dual-era, SDK betas, and the RC lock date (verified 2026-07-25):
+  [Beta SDKs for the 2026-07-28 RC](https://blog.modelcontextprotocol.io/posts/sdk-betas-2026-07-28/)
+  (split packages `@modelcontextprotocol/server` / `client` at `2.0.0-beta.1`;
+  opt-in at the transport; automatic negotiation in both directions) and
+  [The 2026-07-28 Release Candidate](https://blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/)
+  ("The release candidate is locked as of May 21, 2026. The final specification
+  will be published on July 28, 2026."). **This corrects the earlier
+  "Modern↔Legacy fails in both directions" claim in §5.**
+- Cloudflare gateway shape (verified 2026-07-25):
+  [`createMcpHandler` API reference](https://developers.cloudflare.com/agents/model-context-protocol/mcp-handler-api/)
+  (stateless, plain Worker, no Durable Object; fresh `McpServer` per request
+  since SDK 1.26.0) and
+  [Authorization](https://developers.cloudflare.com/agents/model-context-protocol/authorization/)
+  (`OAuthProvider` with `apiRoute`/`apiHandler`/`defaultHandler` +
+  `authorizeEndpoint`/`tokenEndpoint`/`clientRegistrationEndpoint`; third-party
+  IdP federation is the documented Google path; tools read the caller via
+  `getMcpAuthContext()`).
 - Current engine: `src/charter/main.py`, `auth.py`, `actor_auth.py`,
   `settings.py`; proxy `plugin/proxy/charter_mcp.js`.
