@@ -223,10 +223,11 @@ var is stale (see step 4).
 **Security checks** — confirm these before treating a deploy as done, not just
 the happy path:
 
-- `code_challenge_methods_supported` (above) includes `"S256"` — meaning S256
-  is *offered*. It does not mean PKCE is required: the OAuth library treats
-  PKCE as optional and advertises `"plain"` alongside `"S256"`, with no option
-  to withdraw either. See "PKCE is offered, not required" below.
+- `code_challenge_methods_supported` (above) is exactly `["S256"]` — `plain`
+  is refused at `/authorize` (`allowPlainPKCE: false` in `src/index.ts`), and
+  a request naming no method defaults to `plain`, so PKCE is effectively
+  required. If you see `"plain"` in the list, the deploy is running a stale
+  build or a provider older than 0.8.
 - Unauthenticated `POST /mcp` returns `401`, and its `WWW-Authenticate` header
   carries `resource_metadata="https://<your-gateway-host>/.well-known/oauth-protected-resource/mcp"`:
 
@@ -361,15 +362,20 @@ In order:
   the gateway now answers `401` with a `WWW-Authenticate` header so the client
   re-runs OAuth on its own, instead of the session silently going dead.
 
-- **PKCE is offered, not required.** OAuth 2.1 and the MCP spec want S256, but
-  `@cloudflare/workers-oauth-provider` hard-codes
-  `code_challenge_methods_supported: ["plain", "S256"]`, defaults a request with
-  no `code_challenge_method` to `plain`, and treats PKCE as optional
-  altogether — with no configuration hook for any of it. The gateway could
-  refuse non-S256 requests in its own `/authorize`, but the metadata document
-  would still advertise `plain`, so clients would be told one thing and handed
-  another. Left as-is deliberately rather than fought. Real MCP clients send
-  S256.
+- **PKCE S256 is required (fixed 2026-07-26).** Earlier provider versions
+  hard-coded `code_challenge_methods_supported: ["plain", "S256"]` with no
+  hook to withdraw `plain`, and this entry documented that as left-as-is.
+  Provider `0.8.x` added `allowPlainPKCE`; the gateway sets it `false`, so
+  `plain` — including a request naming no method, which defaults to `plain` —
+  is refused at `/authorize` with a legible error, and the metadata advertises
+  only `["S256"]`. Two upgrade notes from the same `0.0.5 → 0.8.2` jump:
+  the provider now decorates its own `/mcp` 401s with a `resource_metadata`
+  URL derived from the *request's* origin — Host-steerable, so the gateway
+  strips and replaces it with the `CHARTER_GATEWAY_URL`-derived one
+  (`withResourceMetadata` in `src/index.ts`); and it supports CIMD behind the
+  `global_fetch_strictly_public` compatibility flag, which is deliberately NOT
+  set — CIMD-registered clients would bypass `/register`'s redirect-URI
+  screening, a surface change that needs its own review before enabling.
 - **Sign-in is bound to one browser — and an earlier version of this document
   was wrong about why that matters.** It described the unsigned `state` as "a
   privilege downgrade and confused-deputy, not a privilege escalation… the

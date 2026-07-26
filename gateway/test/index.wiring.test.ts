@@ -178,6 +178,50 @@ describe("/callback wiring order", () => {
   }
 });
 
+describe("PKCE S256 enforcement (allowPlainPKCE: false)", () => {
+  it("advertises only S256 in the authorization-server metadata", async () => {
+    const res = await call(fullEnv(), "/.well-known/oauth-authorization-server");
+    expect(res.status).toBe(200);
+    const metadata = (await res.json()) as { code_challenge_methods_supported: string[] };
+    expect(metadata.code_challenge_methods_supported).toEqual(["S256"]);
+  });
+
+  it("rejects an /authorize request whose code_challenge_method is plain", async () => {
+    const env = fullEnv();
+    const reg = await call(env, "/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        redirect_uris: [REDIRECT_URI],
+        token_endpoint_auth_method: "none",
+      }),
+    });
+    const { client_id } = (await reg.json()) as { client_id: string };
+
+    // No code_challenge_method at all defaults to plain in the provider, so
+    // this also pins "PKCE is required", not merely "plain is refused".
+    const variants: Record<string, string>[] = [
+      { code_challenge: "x".repeat(43), code_challenge_method: "plain" },
+      {},
+    ];
+    for (const extra of variants) {
+      const res = await call(
+        env,
+        "/authorize?" +
+          new URLSearchParams({
+            response_type: "code",
+            client_id,
+            redirect_uri: REDIRECT_URI,
+            state: "client-state",
+            ...extra,
+          }).toString(),
+      );
+      expect(res.status).toBe(400);
+      expect(await res.text()).toContain("plain PKCE method is not allowed");
+    }
+  });
+});
+
 describe("401 resource_metadata decoration (RFC 9728 discovery mechanism 1)", () => {
   it("adds resource_metadata to a 401 from /mcp", async () => {
     const res = await call(fullEnv(), "/mcp", { method: "POST" });
@@ -185,6 +229,23 @@ describe("401 resource_metadata decoration (RFC 9728 discovery mechanism 1)", ()
     expect(res.headers.get("WWW-Authenticate")).toContain(
       `resource_metadata="${ORIGIN}/.well-known/oauth-protected-resource/mcp"`,
     );
+  });
+
+  it("advertises the configured origin even when the request arrives on a foreign Host", async () => {
+    // The provider (>=0.8) decorates 401s itself with a URL derived from the
+    // request's own origin — steerable by whoever set the Host. The gateway
+    // must replace it with the configured one (same reason as prm.ts).
+    const request = new IncomingRequest("https://evil.example.net/mcp", { method: "POST" });
+    const ctx = createExecutionContext();
+    const res = await worker.fetch(request, fullEnv(), ctx);
+    await waitOnExecutionContext(ctx);
+
+    expect(res.status).toBe(401);
+    const header = res.headers.get("WWW-Authenticate")!;
+    expect(header).toContain(
+      `resource_metadata="${ORIGIN}/.well-known/oauth-protected-resource/mcp"`,
+    );
+    expect(header).not.toContain("evil.example.net");
   });
 
   it("leaves the 401 undecorated when CHARTER_GATEWAY_URL is invalid — never publishes a bad origin", async () => {

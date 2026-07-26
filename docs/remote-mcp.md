@@ -472,17 +472,15 @@ point release.
   publish `code_challenge_methods_supported`; RFC 9207 `iss` (SHOULD); DCR
   deprecated in favor of Client ID Metadata Documents (SHOULD).
 
-  **PKCE `S256` is a requirement we do not meet, and this bullet used to imply
-  we did.** `@cloudflare/workers-oauth-provider` hard-codes
-  `code_challenge_methods_supported: ["plain", "S256"]`, defaults a request that
-  names no method to `plain`, and treats PKCE as optional altogether, with no
-  configuration hook for any of it. The gateway could refuse non-S256 in its own
-  `/authorize`, but the metadata document would still advertise `plain` — so
-  clients would be told one thing and handed another. Accepted deliberately for
-  now (real MCP clients send S256) and recorded as a known limitation in
-  `docs/deployment/gateway.md`; the fix is scheduled separately. Recorded here
-  because a locked decision the deployment does not honour is a defect in this
-  document, not only in the deployment.
+  **PKCE `S256` is enforced (2026-07-26).** Earlier versions of
+  `@cloudflare/workers-oauth-provider` hard-coded
+  `code_challenge_methods_supported: ["plain", "S256"]` and treated PKCE as
+  optional, with no configuration hook — a gap this document recorded as a
+  locked decision the deployment did not honour. Provider `0.8.x` added
+  `allowPlainPKCE`; the gateway sets it to `false`, so `plain` (and a request
+  naming no method, which defaults to `plain` — i.e. PKCE is effectively
+  required) is refused at `/authorize` and the metadata advertises only
+  `["S256"]`. Clients are told the same thing they are handed.
 
 None of that is charter's business logic. Hand-rolling it in Python would mean
 owning a dual-era transport rewrite against a days-old spec, on top of an OAuth

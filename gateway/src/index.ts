@@ -638,6 +638,14 @@ const provider = new OAuthProvider({
   authorizeEndpoint: "/authorize",
   tokenEndpoint: "/token",
   clientRegistrationEndpoint: "/register",
+  // OAuth 2.1 / MCP posture (spec §5): S256 only. With this set the provider
+  // rejects `plain` at parseAuthRequest — and a request with no
+  // code_challenge_method defaults to plain, so PKCE is effectively required —
+  // and advertises only ["S256"] in the authorization-server metadata, so
+  // clients are told the same thing they are handed. Needs provider >=0.8;
+  // before that there was no hook, which is why the runbook documented this
+  // as offered-not-required.
+  allowPlainPKCE: false,
 });
 
 function oauthError(error: string, description: string, status: number): Response {
@@ -738,7 +746,8 @@ function metadataResponse(body: unknown, status = 200): Response {
 }
 
 /**
- * Add RFC 9728's `resource_metadata` to a 401 from the MCP endpoint.
+ * Make a 401 from the MCP endpoint carry RFC 9728's `resource_metadata` —
+ * built from the *configured* origin, and only that.
  *
  * This is discovery mechanism 1 (prm.ts). The well-known paths alone would
  * satisfy the spec, but the header saves a client two probe round-trips and is
@@ -746,16 +755,31 @@ function metadataResponse(body: unknown, status = 200): Response {
  * `unauthorized()` because most 401s on /mcp come from the OAuth provider's own
  * token check, never reaching our handler — a header on only half of them
  * would be worse than none.
+ *
+ * The provider (>=0.8) decorates its own 401s too, but derives the URL from
+ * the request's origin — steerable by whoever set the Host, the exact thing
+ * prm.ts pins to CHARTER_GATEWAY_URL. So any resource_metadata already on the
+ * response is stripped and replaced with the configured one; with no valid
+ * configured origin it is stripped and nothing is published.
  */
-function withResourceMetadata(res: Response, origin: string): Response {
+function withResourceMetadata(res: Response, origin: string | null): Response {
   const headers = new Headers(res.headers);
   const existing = headers.get("WWW-Authenticate");
-  if (existing?.includes("resource_metadata=")) return res;
-  const param = `resource_metadata="${resourceMetadataUrl(origin)}"`;
-  headers.set(
-    "WWW-Authenticate",
-    existing ? `${existing}, ${param}` : `Bearer ${param}`,
-  );
+  const base = existing
+    ?.replace(/,\s*resource_metadata="[^"]*"/, "")
+    .replace(/resource_metadata="[^"]*",?\s*/, "")
+    .trim();
+  if (origin) {
+    const param = `resource_metadata="${resourceMetadataUrl(origin)}"`;
+    headers.set(
+      "WWW-Authenticate",
+      base && base !== "Bearer" ? `${base}, ${param}` : `Bearer ${param}`,
+    );
+  } else if (base) {
+    headers.set("WWW-Authenticate", base);
+  } else if (existing) {
+    headers.delete("WWW-Authenticate");
+  }
   return new Response(res.body, {
     status: res.status,
     statusText: res.statusText,
@@ -804,7 +828,7 @@ export default {
     }
 
     const res = await provider.fetch(request, env, ctx);
-    if (res.status === 401 && url.pathname === MCP_PATH && origin) {
+    if (res.status === 401 && url.pathname === MCP_PATH) {
       return withResourceMetadata(res, origin);
     }
     return res;
