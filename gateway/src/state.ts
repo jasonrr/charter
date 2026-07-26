@@ -37,18 +37,32 @@ const CLOCK_SKEW_SECONDS = 60;
  * __Host- forces Secure, Path=/ and no Domain, so the cookie cannot be planted
  * by a sibling subdomain — which is exactly the attacker capability the nonce
  * is defending against.
+ *
+ * The flow id is part of the *name*, not just the value, so two sign-ins
+ * started in one browser get two cookies instead of overwriting each other.
+ * With a single fixed name, connecting charter in a second MCP client — or
+ * just double-clicking connect — would silently invalidate the first flow.
  */
-export const STATE_COOKIE = "__Host-charter_state";
+export const STATE_COOKIE_PREFIX = "__Host-charter_state_";
+
+export function stateCookieName(flowId: string): string {
+  return `${STATE_COOKIE_PREFIX}${flowId}`;
+}
+
+/** One in-flight sign-in: which cookie it owns, and the secret inside it. */
+export type Flow = { flowId: string; nonce: string };
 
 export type OpenResult =
-  | { ok: true; authRequest: unknown }
+  | { ok: true; authRequest: unknown; flowId: string }
   | { ok: false; reason: string };
 
 type Payload = {
   /** the client's parsed AuthRequest */
   r: unknown;
-  /** nonce, mirrored in the cookie */
+  /** nonce, mirrored in the cookie's value */
   n: string;
+  /** flow id, mirrored in the cookie's name */
+  f: string;
   /** issued-at, epoch seconds */
   t: number;
 };
@@ -95,13 +109,27 @@ export function mintNonce(): string {
   return b64urlEncode(crypto.getRandomValues(new Uint8Array(16)));
 }
 
+/**
+ * A fresh flow. The id only has to be unique among a browser's concurrent
+ * sign-ins, but it costs nothing to make it unguessable too — and a guessable
+ * one would let an attacker aim at a specific in-flight cookie.
+ */
+export function mintFlow(): Flow {
+  return { flowId: mintNonce(), nonce: mintNonce() };
+}
+
 export async function sealState(
   key: CryptoKey,
   authRequest: unknown,
-  nonce: string,
+  flow: Flow,
   issuedAt: number,
 ): Promise<string> {
-  const payload: Payload = { r: authRequest, n: nonce, t: issuedAt };
+  const payload: Payload = {
+    r: authRequest,
+    n: flow.nonce,
+    f: flow.flowId,
+    t: issuedAt,
+  };
   // Encode to bytes before base64: the client's own `state` rides inside this
   // and may hold characters btoa alone would reject.
   const body = new TextEncoder().encode(JSON.stringify(payload));
@@ -109,10 +137,15 @@ export async function sealState(
   return `${b64urlEncode(body)}.${b64urlEncode(mac)}`;
 }
 
+/**
+ * Takes the whole Cookie header rather than one cookie value, because which
+ * cookie to read is itself derived from the state — and we will not act on the
+ * state's contents before the signature has cleared.
+ */
 export async function openState(
   key: CryptoKey,
   state: string,
-  cookieNonce: string | null,
+  cookieHeader: string | null,
   nowSeconds: number,
 ): Promise<OpenResult> {
   const dot = state.indexOf(".");
@@ -151,18 +184,28 @@ export async function openState(
   }
 
   // The browser binding. A signed state replayed from anywhere else dies here.
-  if (
-    typeof payload.n !== "string" ||
-    !cookieNonce ||
-    !timingSafeEqual(payload.n, cookieNonce)
-  ) {
-    return { ok: false, reason: "state did not come from this browser" };
+  //
+  // The wording matters: this fires for ordinary reasons far more often than
+  // hostile ones — a sign-in finished after its cookie expired, resumed in a
+  // different browser, or completed after the user cleared cookies. Naming an
+  // attack here would turn routine support questions into suspected breaches.
+  if (typeof payload.n !== "string" || typeof payload.f !== "string") {
+    return { ok: false, reason: "malformed state" };
+  }
+  const cookieNonce = readCookie(cookieHeader, stateCookieName(payload.f));
+  if (!cookieNonce || !timingSafeEqual(payload.n, cookieNonce)) {
+    return {
+      ok: false,
+      reason:
+        "could not verify this sign-in in this browser. It may have expired, " +
+        "or been started in a different browser. Start again from your client.",
+    };
   }
 
   if (!payload.r || typeof payload.r !== "object") {
     return { ok: false, reason: "malformed state" };
   }
-  return { ok: true, authRequest: payload.r };
+  return { ok: true, authRequest: payload.r, flowId: payload.f };
 }
 
 /** Read one cookie out of a request's Cookie header. */
@@ -177,14 +220,21 @@ export function readCookie(header: string | null, name: string): string | null {
   return null;
 }
 
-export function setStateCookie(nonce: string): string {
+export function setStateCookie(flow: Flow): string {
   return (
-    `${STATE_COOKIE}=${nonce}; Path=/; HttpOnly; Secure; SameSite=Lax; ` +
-    `Max-Age=${STATE_TTL_SECONDS}`
+    `${stateCookieName(flow.flowId)}=${flow.nonce}; Path=/; HttpOnly; Secure; ` +
+    `SameSite=Lax; Max-Age=${STATE_TTL_SECONDS}`
   );
 }
 
-/** Clear it once the flow is over, so a finished nonce cannot be reused. */
-export function clearStateCookie(): string {
-  return `${STATE_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`;
+/**
+ * Clear one flow's cookie once it is spent, so a finished nonce cannot be
+ * reused. Abandoned flows are not cleared here — nothing comes back to do it —
+ * but Max-Age bounds them to the TTL.
+ */
+export function clearStateCookie(flowId: string): string {
+  return (
+    `${stateCookieName(flowId)}=; Path=/; HttpOnly; Secure; SameSite=Lax; ` +
+    `Max-Age=0`
+  );
 }

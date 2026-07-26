@@ -136,7 +136,7 @@ the happy path:
       # drive /authorize, keep the redirect URL, then replay it with no cookie jar
       curl -s -o /dev/null -w '%{http_code}\n' \
         "https://<your-gateway-host>/callback?code=x&state=<signed-state>"
-      # expect 400 — "state did not come from this browser"
+      # expect 400 — "could not verify this sign-in in this browser…"
 
 - An authenticated `tools/list` shows `charter_read` with `readOnlyHint: true`.
 
@@ -202,7 +202,9 @@ here.
   **Fixed.** The `state` is now HMAC-signed with `OAUTH_STATE_SECRET` *and*
   carries a random nonce mirrored in a `__Host-` prefixed, `HttpOnly`, `Secure`,
   `SameSite=Lax` cookie with a 10-minute TTL. `/callback` requires both a valid
-  signature and a matching cookie. Signing alone would not have been enough —
+  signature and a matching cookie. Each sign-in gets its own cookie *name*, so
+  starting a second one — a second MCP client, or a double-clicked connect —
+  does not invalidate the first. Signing alone would not have been enough —
   an attacker can always ask us to sign a state of their own; the cookie is the
   half they cannot plant in someone else's browser. Logic and edge cases live in
   `gateway/src/state.ts` with unit tests (`gateway/test/state.test.ts`).

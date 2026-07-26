@@ -40,12 +40,11 @@ import {
 import {
   clearStateCookie,
   importStateKey,
-  mintNonce,
+  mintFlow,
   openState,
-  readCookie,
   sealState,
   setStateCookie,
-  STATE_COOKIE,
+  type Flow,
 } from "./state.js";
 
 export type Env = {
@@ -263,17 +262,17 @@ const authHandler = {
 
     if (url.pathname === "/authorize") {
       let state: string;
-      let nonce: string;
+      let flow: Flow;
       try {
         // @cloudflare/workers-oauth-provider parses and redirect-URI-checks the
         // client's request. We sign it and bind it to this browser before
         // handing it to Google — see state.ts for why both halves are needed.
         const authRequest = await env.OAUTH_PROVIDER.parseAuthRequest(request);
-        nonce = mintNonce();
+        flow = mintFlow();
         state = await sealState(
           await importStateKey(env.OAUTH_STATE_SECRET),
           authRequest,
-          nonce,
+          flow,
           Math.floor(Date.now() / 1000),
         );
       } catch (e) {
@@ -296,7 +295,7 @@ const authHandler = {
         status: 302,
         headers: {
           Location: buildAuthorizeUrl(googleConfig(env, request.url), state),
-          "Set-Cookie": setStateCookie(nonce),
+          "Set-Cookie": setStateCookie(flow),
         },
       });
     }
@@ -307,18 +306,19 @@ const authHandler = {
       const opened = await openState(
         await importStateKey(env.OAUTH_STATE_SECRET),
         url.searchParams.get("state") ?? "",
-        readCookie(request.headers.get("Cookie"), STATE_COOKIE),
+        request.headers.get("Cookie"),
         Math.floor(Date.now() / 1000),
       );
       if (!opened.ok) return browserError(opened.reason, 400);
       const oauthReq = opened.authRequest as AuthRequest;
 
-      // parseAuthRequest already checked this redirect URI against the client's
-      // registered set — but at /authorize, and the check does not survive the
-      // trip through `state`. The state is unsigned and completeAuthorization
-      // re-checks nothing, so without this a crafted state sends an
-      // authorization code to an address of the caller's choosing: an open
-      // redirect in an authorization server. Cheap to re-run, so re-run it.
+      // Re-check the redirect URI even though the state is now signed, and the
+      // signature already rules out an edited one. The reason is freshness, not
+      // integrity: parseAuthRequest checked this at /authorize, and a client's
+      // registration can be updated or deleted in between — so a state that was
+      // honest when we signed it can name a URI that is no longer registered by
+      // the time it comes back. completeAuthorization re-checks nothing itself.
+      // Cheap to re-run, so re-run it.
       let client: Awaited<ReturnType<OAuthHelpers["lookupClient"]>>;
       try {
         client = await env.OAUTH_PROVIDER.lookupClient(oauthReq.clientId);
@@ -362,11 +362,15 @@ const authHandler = {
           400,
         );
       }
-      // Clear the nonce on the way out: the flow is over, and a spent cookie
-      // should not be able to authenticate a second state.
+      // Clear this flow's cookie on the way out: it is spent, and should not be
+      // able to authenticate a second state. Any other flow's cookie is left
+      // alone — that is the point of the per-flow name.
       return new Response(null, {
         status: 302,
-        headers: { Location: redirectTo, "Set-Cookie": clearStateCookie() },
+        headers: {
+          Location: redirectTo,
+          "Set-Cookie": clearStateCookie(opened.flowId),
+        },
       });
     }
 
