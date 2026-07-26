@@ -3,10 +3,6 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-07-01",
   "compatibility_flags": ["nodejs_compat"],
-  // `agents/mcp` dynamically imports "ai", an optional peer dependency we do
-  // not install. The call is unreachable for an MCP server, but esbuild
-  // resolves dynamic imports at bundle time. See src/ai-stub.ts.
-  "alias": { "ai": "./src/ai-stub.ts" },
   "kv_namespaces": [
     { "binding": "OAUTH_KV", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }
   ],
