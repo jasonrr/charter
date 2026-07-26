@@ -43,15 +43,23 @@ def _reload_keys(body, caller):
 # Discovery primitive: any authenticated caller may call verbs.list regardless of scope,
 # so an agent can always learn its own toolbox. It reveals only the verbs the caller is
 # already allowed to use, so it leaks nothing.
-# (require_actor keys: this ALSO bypasses the actor gate — an agent must be able to inspect
-# its toolbox before a human signs in. Safe: a valid key with no actor leaks nothing new.)
-# result.read joins verbs.list: its authorization is OWNERSHIP (only the caller
+# result.read joins verbs.list here: its authorization is OWNERSHIP (only the caller
 # record that produced a result may fetch it — enforced in results.fetch), which
 # is stricter than any grant pattern; requiring a result.* grant would only lock
-# humans out of their own results. Note this also bypasses the require_actor
-# gate below, which is safe for the same reason: a keyless/actorless caller can
-# only ever read what that same caller record produced.
+# humans out of their own results.
+#
+# _ALWAYS_ALLOWED is SCOPE-exempt only. The require_actor gate below answers a
+# different question — whether a human must be behind this call — and the two
+# verbs split on it:
+#   - verbs.list is also actor-exempt (_ACTOR_EXEMPT): an agent must be able to
+#     inspect its toolbox before a human signs in, and a valid key with no actor
+#     leaks nothing new by listing it.
+#   - result.read is NOT actor-exempt: ownership authorizes WHICH blobs a caller
+#     may fetch, but it does not waive the human-presence requirement that
+#     caller's key was configured with. A bare leaked require_actor key must not
+#     be able to read a blob its human produced.
 _ALWAYS_ALLOWED = {"verbs.list", "result.read"}
+_ACTOR_EXEMPT = {"verbs.list"}
 
 
 def _can(caller, verb):
@@ -89,12 +97,19 @@ register("admin.reload_keys", _reload_keys, "post", read=False)
 register("identity.whoami", whoami, "post")
 
 
+def _producer(caller):
+    """Producer identity for the results store, namespaced by interface so a key
+    named like a granted email can never collide with that human's OAuth identity
+    (interface is "oauth" for a verified human, "api"/"plugin"/etc. for a key)."""
+    return f"{caller['interface']}:{caller['name']}"
+
+
 def result_read(body, caller):
     """Fetch a previously offloaded oversized result by id (producer-only). Returns the
     stored envelope as a JSON string; meant for the gateway's resource fetch, not for
     inlining into a model's context."""
     rid_arg = body.get("id")
-    content = results.fetch(rid_arg if isinstance(rid_arg, str) else "", caller["name"])
+    content = results.fetch(rid_arg if isinstance(rid_arg, str) else "", _producer(caller))
     return {"content": content, "mime": "application/json",
             "target": f"result:{rid_arg[:64] if isinstance(rid_arg, str) else ''}"}
 
@@ -124,7 +139,7 @@ def _success(verb, rid, caller, result):
             or len(encoded.encode()) <= cfg.max_inline_bytes):
         return (encoded, 200, {"Content-Type": "application/json"})
     try:
-        ref = results.store(encoded, caller["name"], verb)
+        ref = results.store(encoded, _producer(caller), verb)
     except Exception:
         return (encoded, 200, {"Content-Type": "application/json"})
     return _json({"ok": True, "verb": verb, "request_id": rid,
@@ -203,7 +218,7 @@ def bridge(request):
         record(caller, verb, target, e.code, rid=rid, detail=e.detail)
         return _json({"ok": False, "verb": verb, "error": e.code, "detail": e.detail,
                       "request_id": rid}, e.status)
-    if caller.get("require_actor") and not actor and verb not in _ALWAYS_ALLOWED:
+    if caller.get("require_actor") and not actor and verb not in _ACTOR_EXEMPT:
         record(caller, verb, target, "actor_required", rid=rid)
         return _json({"ok": False, "verb": verb, "error": "actor_required",
                       "detail": "Sign in first: call your identity provider login tool, then retry.",

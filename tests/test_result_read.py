@@ -41,8 +41,8 @@ def test_result_read_returns_owned_blob_despite_empty_allow(monkeypatch):
     assert status == 200
     assert body["content"] == '{"ok": true, "big": 1}'
     assert body["mime"] == "application/json"
-    # the producer passed through is the caller record's name — that IS the authz
-    assert seen == {"rid": "A" * 24, "producer": "key-a"}
+    # the producer passed through is the namespaced caller identity — that IS the authz
+    assert seen == {"rid": "A" * 24, "producer": "api:key-a"}
     # audited as a normal ok row with the result target
     assert any(a[3] == "ok" and a[2] == f"result:{'A' * 24}" for a, k in rows)
 
@@ -66,3 +66,29 @@ def test_result_read_is_listed_and_read(monkeypatch):
     # always-allowed: empty allow-list still passes _can; classified as a read verb
     assert main._can(dict(CALLER), "result.read")
     assert main._is_read("result.read")
+
+
+def test_result_read_requires_actor_when_flagged(monkeypatch):
+    # scope-exempt (ownership authorizes it) but NOT actor-exempt: a require_actor
+    # key must not read blobs without its human, same as any other verb.
+    caller = {**CALLER, "require_actor": True}
+    monkeypatch.setattr(main, "identify", lambda req: dict(caller))
+    monkeypatch.setattr(main, "actor_email", lambda req: None)
+    calls = []
+    monkeypatch.setattr(main, "record", lambda *a, **k: calls.append((a, k)))
+    body, status = _parse(main.bridge(FakeRequest({"verb": "result.read", "id": "A" * 24})))
+    assert status == 401
+    assert body["error"] == "actor_required"
+    assert any(a[3] == "actor_required" for a, k in calls)
+
+
+def test_verbs_list_still_actor_exempt_for_require_actor_caller(monkeypatch):
+    # verbs.list stays actor-exempt so the same caller can inspect its toolbox
+    # pre-login; only result.read's exemption was narrowed.
+    caller = {**CALLER, "require_actor": True}
+    monkeypatch.setattr(main, "identify", lambda req: dict(caller))
+    monkeypatch.setattr(main, "actor_email", lambda req: None)
+    monkeypatch.setattr(main, "record", lambda *a, **k: None)
+    body, status = _parse(main.bridge(FakeRequest({"verb": "verbs.list"})))
+    assert status == 200
+    assert body["ok"] is True

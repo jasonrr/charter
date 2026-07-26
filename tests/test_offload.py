@@ -53,7 +53,7 @@ def test_oversize_success_offloads(monkeypatch):
     full = json.loads(stored["body"])
     assert full["blob"] == "x" * 500 and full["ok"] is True
     assert body["result_ref"]["bytes"] == len(stored["body"].encode())
-    assert (stored["producer"], stored["verb"]) == ("key-a", "test.big")
+    assert (stored["producer"], stored["verb"]) == ("api:key-a", "test.big")
 
 
 def test_small_success_stays_inline(monkeypatch):

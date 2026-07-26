@@ -72,6 +72,17 @@ def test_fetch_missing_and_malformed_ids_are_result_unknown(bucket):
         assert e.value.code == "result_unknown"
 
 
+def test_namespaced_producer_closes_key_name_collision(bucket):
+    # A key literally named like a granted email must not share result access
+    # with that human's OAuth identity — producers are namespaced by interface
+    # (main._producer), so "oauth:jason@example.com" and "api:jason@example.com"
+    # never collide even though results.py treats producer as an opaque string.
+    rid = results.store("{}", "oauth:jason@example.com", "identity.whoami")
+    with pytest.raises(VerbError) as e:
+        results.fetch(rid, "api:jason@example.com")
+    assert (e.value.status, e.value.code) == (404, "result_unknown")
+
+
 def test_fetch_with_no_results_bucket_is_result_unknown(monkeypatch):
     monkeypatch.setenv("RESULTS_BUCKET", "")
     settings_mod.get_settings.cache_clear()
