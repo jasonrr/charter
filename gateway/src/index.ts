@@ -1,9 +1,10 @@
 /**
  * charter-gateway: MCP over Streamable HTTP, OAuth in front, charter-core behind.
  *
- * Wiring only. The gateway holds two secrets — the core credential and the
- * Google client secret — so humans hold neither (§3). It decides nothing: the
- * caller's Google ID token rides to core as X-Actor-Token, and core derives
+ * Wiring only. The gateway holds two secrets — core's CF Access service token
+ * and the Google client secret — so humans hold neither (§3). It decides
+ * nothing, and carries no authority of its own: the caller's Google ID token
+ * rides to core as X-Actor-Token with no API key beside it, and core derives
  * scope from grants and writes the audit row (§2.1).
  *
  * Stateless by construction: createMcpHandler in a plain Worker, a fresh
@@ -57,8 +58,18 @@ export type Env = {
   CHARTER_CORE_URL: string;
   CHARTER_ALLOWED_DOMAIN: string;
   GOOGLE_CLIENT_ID: string;
-  /** wrangler secret put CHARTER_CREDENTIAL */
-  CHARTER_CREDENTIAL: string;
+  /** wrangler secret put CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET — the
+   * service token for core's tunnel. Unset on a deploy whose core is not behind
+   * CF Access. */
+  CF_ACCESS_CLIENT_ID?: string;
+  CF_ACCESS_CLIENT_SECRET?: string;
+  /**
+   * Optional. A charter API key, sent only on a call with no signed-in human
+   * (core.ts's authHeaders). Leave it unset for the human-facing deployment:
+   * a key present alongside an actor token would override that human's grant,
+   * which is what §2.1 forbids.
+   */
+  CHARTER_API_KEY?: string;
   /** wrangler secret put GOOGLE_CLIENT_SECRET */
   GOOGLE_CLIENT_SECRET: string;
   /** wrangler secret put OAUTH_STATE_SECRET — HMAC key for the sign-in state (state.ts). */
@@ -121,11 +132,13 @@ function googleConfig(env: Env, gatewayUrl: string): GoogleConfig {
 function coreConfig(env: Env): CoreConfig {
   return {
     url: env.CHARTER_CORE_URL,
-    // Same reasoning as clientSecret above: core.ts's scrub() calls
-    // .split(":") on this unconditionally, and an unset CHARTER_CREDENTIAL is
-    // `undefined` despite the `string` type — the fallback turns that into a
-    // clean 401 from core instead of a raw TypeError surfaced to the model.
-    credential: env.CHARTER_CREDENTIAL ?? "",
+    // Same reasoning as clientSecret above: these are `undefined` at runtime
+    // when unset, and core.ts treats an empty value as "no such header" — a
+    // misconfigured deploy gets a clean rejection from CF Access or core rather
+    // than a header whose value is the string "undefined".
+    cfAccessClientId: env.CF_ACCESS_CLIENT_ID ?? "",
+    cfAccessClientSecret: env.CF_ACCESS_CLIENT_SECRET ?? "",
+    apiKey: env.CHARTER_API_KEY ?? "",
   };
 }
 

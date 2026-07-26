@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { callCore, credHeaders, type CoreConfig } from "../src/core.js";
+import { authHeaders, callCore, type CoreConfig } from "../src/core.js";
 
 const CFG: CoreConfig = {
   url: "https://core.example.com",
-  credential: "cfid:cfsecret:apikey",
+  cfAccessClientId: "cfid",
+  cfAccessClientSecret: "cfsecret",
 };
+
+/** A deploy that also holds an API key, for the headless-shaped call. */
+const CFG_WITH_KEY: CoreConfig = { ...CFG, apiKey: "apikey" };
 
 /** Minimal fetch double: records the request, returns a canned response. */
 function fakeFetch(status: number, body: string) {
@@ -16,26 +20,32 @@ function fakeFetch(status: number, body: string) {
   return { impl, seen };
 }
 
-describe("credHeaders", () => {
-  it("splits the three-part credential, keeping colons in the api key", () => {
-    expect(credHeaders("cfid:cfsecret:api:key:with:colons")).toEqual({
-      "X-API-Key": "api:key:with:colons",
-      "CF-Access-Client-Id": "cfid",
-      "CF-Access-Client-Secret": "cfsecret",
-    });
+describe("authHeaders", () => {
+  // The load-bearing one. Core resolves X-API-Key before the actor+grants path,
+  // so a key sent beside an actor token silently authorizes every signed-in
+  // human as the gateway. If this test ever goes green with both headers
+  // present, grants are dead config (spec §2.1, §4.1).
+  it("never sends an API key alongside an actor token", () => {
+    const h = authHeaders(CFG_WITH_KEY, "idtok");
+    expect(h["X-Actor-Token"]).toBe("idtok");
+    expect("X-API-Key" in h).toBe(false);
   });
 
-  it("treats a colon-free credential as a bare api key", () => {
-    expect(credHeaders("justakey")).toEqual({
-      "X-API-Key": "justakey",
-      "CF-Access-Client-Id": "",
-      "CF-Access-Client-Secret": "",
-    });
+  it("sends the API key when there is no actor token", () => {
+    const h = authHeaders(CFG_WITH_KEY);
+    expect(h["X-API-Key"]).toBe("apikey");
+    expect("X-Actor-Token" in h).toBe(false);
   });
 
-  it("yields an empty api key for a malformed two-part credential", () => {
-    // Fails loudly at core (401) rather than silently sending half a credential.
-    expect(credHeaders("cfid:cfsecret")["X-API-Key"]).toBe("");
+  it("always sends the CF Access service token — it is the network gate, not scope", () => {
+    for (const h of [authHeaders(CFG_WITH_KEY, "idtok"), authHeaders(CFG_WITH_KEY)]) {
+      expect(h["CF-Access-Client-Id"]).toBe("cfid");
+      expect(h["CF-Access-Client-Secret"]).toBe("cfsecret");
+    }
+  });
+
+  it("omits unset headers rather than sending empty ones", () => {
+    expect(authHeaders({ url: "https://core.example.com", cfAccessClientId: "", cfAccessClientSecret: "" })).toEqual({});
   });
 });
 
@@ -57,13 +67,13 @@ describe("callCore", () => {
     expect(JSON.parse(String(seen[0].init.body)).read_only).toBe(true);
   });
 
-  it("sends the credential and actor token as headers", async () => {
+  it("sends the CF Access token and the actor token, and no API key", async () => {
     const { impl, seen } = fakeFetch(200, "{}");
-    await callCore(impl, CFG, "verbs.list", {}, { actorToken: "idtok" });
+    await callCore(impl, CFG_WITH_KEY, "verbs.list", {}, { actorToken: "idtok" });
     const h = seen[0].init.headers as Record<string, string>;
-    expect(h["X-API-Key"]).toBe("apikey");
     expect(h["CF-Access-Client-Id"]).toBe("cfid");
     expect(h["X-Actor-Token"]).toBe("idtok");
+    expect("X-API-Key" in h).toBe(false);
     expect(h["Content-Type"]).toBe("application/json");
   });
 
@@ -156,11 +166,11 @@ describe("callCore", () => {
     expect(r.text).toBe("request failed: connection reset");
   });
 
-  it("never leaks the credential into an error message", async () => {
+  it("never leaks a credential into an error message", async () => {
     const impl = (async () => {
       throw new Error("boom cfid:cfsecret:apikey");
     }) as unknown as typeof fetch;
-    const r = await callCore(impl, CFG, "verbs.list", {}, {});
+    const r = await callCore(impl, CFG_WITH_KEY, "verbs.list", {}, {});
     expect(r.text).not.toContain("apikey");
     expect(r.text).not.toContain("cfsecret");
   });

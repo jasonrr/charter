@@ -1,8 +1,8 @@
 # charter-gateway
 
 The gateway is what Claude clients connect to. It terminates MCP and OAuth, and
-translates to core. It holds the two secrets humans used to paste: the core
-credential and the Google client secret.
+translates to core. It holds the secrets humans used to paste: core's CF Access
+service token and the Google client secret.
 
 Core is unchanged by this, with one exception — see "Repoint core" below.
 
@@ -71,16 +71,39 @@ Set the non-secret values in `wrangler.jsonc` → `vars`:
   origins clients may register redirect URIs on. Empty (closed) by default; see
   "Sign-in is bound to one browser" below before widening it.
 
-Then the three secrets, which are never written to a file:
+Then the secrets, which are never written to a file:
 
-    npx wrangler secret put CHARTER_CREDENTIAL      # cf-id:cf-secret:api-key
+    npx wrangler secret put CF_ACCESS_CLIENT_ID
+    npx wrangler secret put CF_ACCESS_CLIENT_SECRET
     npx wrangler secret put GOOGLE_CLIENT_SECRET
     npx wrangler secret put OAUTH_STATE_SECRET      # e.g. openssl rand -base64 32
 
-The credential is the same composite form the proxy used. Mint its API key with
-`charter keys mint` and give it the allow-list the *gateway* needs — it is the
-gateway's own credential, not a human's. Human scope comes from grants
-(`docs/deployment/grants.md`), which core applies to the actor token.
+`CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` are core's CF Access service
+token — the same pair the proxy carried, now held once. They are a *network*
+gate: they say the caller is the gateway, not what the caller may do. Skip them
+if your core is not behind CF Access.
+
+**Do not mint an API key for the gateway.** This reverses the proxy's advice, on
+purpose. Core's `bridge()` resolves `X-API-Key` *before* the actor-token +
+grants path, so a key present on a human's call replaces that human's grant with
+the key's allow-list: everyone signed in would run with the union of what
+everyone needs, `charter-grants` would never be read, and the audit row would
+name the key as the actor with the human only in `on_behalf_of`. The gateway now
+makes that impossible rather than merely discouraged — it never sends
+`X-API-Key` on a call that carries `X-Actor-Token` (`gateway/src/core.ts`
+`authHeaders`, unit-tested). Human scope comes from grants
+(`docs/deployment/grants.md`), which core applies to the actor token, and every
+human needs one before they can do anything.
+
+There is an optional `CHARTER_API_KEY` secret. It is sent only on a call with no
+signed-in human behind it, which no route reaches today — it exists for the
+headless-MCP path sketched in `docs/remote-mcp.md` §7.1 and should stay unset.
+
+**Upgrading from an earlier gateway deploy:** `CHARTER_CREDENTIAL` (the packed
+`cf-id:cf-secret:api-key` form) is gone and is now ignored. Set the two CF Access
+secrets above, then `npx wrangler secret delete CHARTER_CREDENTIAL` — leaving it
+set does nothing, but it reads like live config. If you skip the new secrets,
+CF Access rejects the gateway at core's tunnel and every tool call fails.
 
 `OAUTH_STATE_SECRET` is the HMAC key that signs the sign-in `state` and binds it
 to the browser that started the flow. It is what stops an attacker from having a
@@ -94,9 +117,10 @@ missing, `/authorize` and `/callback` return `503` naming exactly which ones,
 rather than failing somewhere further away — an empty `GOOGLE_CLIENT_ID` used to
 surface as Google's own "Could not determine client ID from request" in the
 user's browser. There is deliberately **no** unsigned-state fallback: without
-`OAUTH_STATE_SECRET` the sign-in routes do not run at all. An unset
-`CHARTER_CREDENTIAL` still fails at core as a clean `401` rather than a raw
-exception surfaced to the model.
+`OAUTH_STATE_SECRET` the sign-in routes do not run at all. An unset CF Access
+pair is simply omitted from the request rather than sent as empty headers, so it
+fails at the tunnel as a clean rejection rather than a raw exception surfaced to
+the model.
 
     npx wrangler deploy
 
@@ -170,9 +194,12 @@ non-authoritative: the decision and the audit record both happen in core, not
 here.
 
 - A verb outside the caller's grant returns `denied`.
-- An email with no grant at all gets `unauthorized`.
+- An email with no grant at all gets `unauthorized` — and core audits it as
+  `no_grant`. This is the check that proves grants are live: if a signed-in
+  email with no grant can run verbs, the gateway is sending an API key and every
+  human is running as it.
 - Core's audit table shows the call with `interface = "oauth"` and the
-  signed-in email as the actor.
+  signed-in email as the actor — not `on_behalf_of` under some other actor.
 
 ## Known limitations
 
@@ -305,8 +332,12 @@ here.
 
 - It makes **no authorization decision** and writes **no audit row**. Core
   verifies the Google token itself and applies grants.
-- It never forwards the client's MCP token upstream. Calls to core use the
-  gateway's own credential — the MCP spec forbids passthrough.
+- It **holds no scope of its own** on a human's call. The only credential it
+  adds is the CF Access service token, which opens the tunnel and grants
+  nothing. See "Do not mint an API key for the gateway" above.
+- It never forwards the client's MCP token upstream — the MCP spec forbids
+  passthrough. Core sees the caller's *Google* ID token, which the gateway
+  cannot forge, plus the CF Access pair.
 - **HubSpot connect is not available through the gateway yet.** That flow needs a
   loopback listener the old proxy had. Verbs needing a HubSpot identity return
   `hs_identity_required` until it is re-hosted.

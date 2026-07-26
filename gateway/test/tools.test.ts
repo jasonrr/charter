@@ -7,7 +7,11 @@ import {
 } from "../src/tools.js";
 import type { CoreConfig } from "../src/core.js";
 
-const CFG: CoreConfig = { url: "https://core.example.com", credential: "k" };
+const CFG: CoreConfig = {
+  url: "https://core.example.com",
+  cfAccessClientId: "cfid",
+  cfAccessClientSecret: "cfsecret",
+};
 
 function fakeFetch(status: number, body: string) {
   const seen: { body: string; headers: Record<string, string> }[] = [];
