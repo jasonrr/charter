@@ -23,18 +23,17 @@ All engine configuration is via environment variables. No config files, no YAML.
 | `AUDIT_TABLE` | `charter.audit` | BigQuery table for audit logs |
 | `WAREHOUSE_DATASETS` | (empty) | Comma-separated list of BigQuery datasets exposed by `data.warehouse.*` |
 
-## Proxy-specific (plugin / MCPB)
+## Plugin (interactive install)
 
-These are set via the plugin's `user_config` or manifest env keys:
+One value, set when installing the Claude Code plugin:
 
 | Key | Required | Description |
 |---|---|---|
-| `charter_url` | Yes | Bridge endpoint URL |
-| `credential` | Yes | `cf-client-id:cf-secret:api-key` combined string |
-| `google_client_id` | Yes | Your Google OAuth client ID |
-| `google_client_secret` | Yes | Your Google OAuth client secret |
-| `domain_hint` | No | Preferred email domain for Google sign-in hint |
-| `hubspot_client_id` | No | HubSpot app client ID for HubSpot identity |
+| `gateway_url` | Yes | Origin of your charter-gateway deployment; the plugin points MCP at `<gateway_url>/mcp`. Not a secret. |
+
+Gateway deployment variables (`CHARTER_GATEWAY_URL`, `CF_ACCESS_CLIENT_ID`,
+`CF_ACCESS_CLIENT_SECRET`, `OAUTH_STATE_SECRET`, …) are documented in
+[`deployment/gateway.md`](deployment/gateway.md).
 
 ## Pack-specific
 
