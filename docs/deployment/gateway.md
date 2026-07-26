@@ -303,6 +303,23 @@ here.
 - Core's audit table shows the call with `interface = "oauth"` and the
   signed-in email as the actor — not `on_behalf_of` under some other actor.
 
+## Cutover from the stdio proxy (one-time)
+
+Ships with the release that removes `plugin/proxy/` (`remote-mcp.md` §7.1).
+In order:
+
+1. Deploy the gateway; verify per this runbook.
+2. Set core's `GOOGLE_OAUTH_CLIENT_ID` to the gateway's Web application
+   client id and redeploy core (`remote-mcp.md` §4.6 "Audience"). From this
+   moment the old proxy cannot verify actors — expected, there are no
+   adopters on it.
+3. Populate `charter-grants` for every interactive human
+   (`deployment/grants.md`); an empty grants file is a locked-out
+   deployment, not a permissive one.
+4. Delete the old Google **Desktop** OAuth client in the Cloud console.
+5. Update the installed plugin (`claude plugin install charter@charter`);
+   verify per `INSTALL.md` step 7.
+
 ## Known limitations
 
 - **A response over 1 MB comes back as an error, not a partial result.**
