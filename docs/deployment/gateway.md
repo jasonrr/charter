@@ -61,6 +61,9 @@ Set the non-secret values in `wrangler.jsonc` → `vars`:
 - `CHARTER_CORE_URL` — your core endpoint, https only
 - `CHARTER_ALLOWED_DOMAIN` — e.g. `@yourdomain.com`, matching core's setting
 - `GOOGLE_CLIENT_ID` — from step 1
+- `CHARTER_EXTRA_REDIRECT_ORIGINS` — optional, comma-separated extra https
+  origins clients may register redirect URIs on. Empty (closed) by default; see
+  "Sign-in is bound to one browser" below before widening it.
 
 Then the three secrets, which are never written to a file:
 
@@ -138,6 +141,16 @@ the happy path:
         "https://<your-gateway-host>/callback?code=x&state=<signed-state>"
       # expect 400 — "could not verify this sign-in in this browser…"
 
+- Registering a client with a public redirect URI is refused:
+
+      curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+        https://<your-gateway-host>/register -H 'Content-Type: application/json' \
+        -d '{"client_name":"x","redirect_uris":["https://attacker.example/collect"],"token_endpoint_auth_method":"none"}'
+      # expect 400 (invalid_redirect_uri)
+
+- `GET /authorize` for a registered client returns **200 HTML** (the consent
+  screen), not a 302 to Google, and the page shows the client's redirect URI
+  origin.
 - An authenticated `tools/list` shows `charter_read` with `readOnlyHint: true`.
 
 **Happy path**, from a real client: point it at `https://<your-gateway-host>/mcp`,
@@ -209,16 +222,57 @@ here.
   half they cannot plant in someone else's browser. Logic and edge cases live in
   `gateway/src/state.ts` with unit tests (`gateway/test/state.test.ts`).
 
-  **Residual, smaller but real.** The cookie binds the callback to whichever
-  browser began the flow, so it closes the chain above — where the victim clicks
-  a link to *Google*. It does not close the variant where the victim is phished
-  into clicking a link to the gateway's own `/authorize` carrying the attacker's
-  `client_id` and `redirect_uri`: that browser legitimately receives both the
-  cookie and the state, and the code is then delivered to the attacker's
-  registered address. Closing that needs a consent screen naming the client
-  before the flow starts, or an end to open dynamic client registration. Neither
-  is built. Until one is, treat "a charter sign-in link someone sent you" the
-  same way you would treat any other unexpected OAuth prompt.
+  **The phishing variant is closed too, by two further changes.**
+
+  *Registration is constrained.* `POST /register` now accepts only redirect URIs
+  that are loopback (`http://localhost`, `http://127.0.0.1`, `http://[::1]`, any
+  port) or https on the gateway's own origin. A loopback URI resolves on the
+  victim's own machine, so there is nowhere for an attacker to collect a code —
+  this is the control that actually *prevents* the attack. No vendor allow-list
+  is maintained. Entries outside that set are dropped from the registration and
+  the rest is registered; a registration with nothing acceptable left is refused
+  with `invalid_redirect_uri`. Logic and edge cases (userinfo smuggling,
+  percent-encoded and unicode hosts, `localhost.evil.example`) are in
+  `gateway/src/redirect_uri.ts` with unit tests.
+
+  **This can break a client, and the lever is `CHARTER_EXTRA_REDIRECT_ORIGINS`.**
+  VS Code's dynamic registration sends a mixed array —
+  `https://insiders.vscode.dev/redirect`, `https://vscode.dev/redirect`,
+  `http://127.0.0.1/`, `http://127.0.0.1:33418/`. It keeps working, because its
+  loopback URIs are accepted and those are its primary flow, but its
+  non-loopback fallback (used when port 33418 is taken) is dropped. To restore
+  it, add the origins to that var in `wrangler.jsonc`:
+
+      "CHARTER_EXTRA_REDIRECT_ORIGINS": "https://vscode.dev,https://insiders.vscode.dev"
+
+  It is a comma-separated origin list and defaults to empty — closed.
+
+  *Consent is required before forwarding to Google.* `/authorize` now renders an
+  interstitial that the user must click through. This is not a preference; the
+  MCP spec's authorization Security Considerations require it for exactly this
+  architecture — one static upstream client id, open registration, forwarding to
+  a third-party authorization server:
+
+  > MCP proxy servers using static client IDs **MUST** obtain user consent for
+  > each dynamically registered client before forwarding to third-party
+  > authorization servers (which may require additional consent).
+
+  The page shows the **redirect URI's origin**, deliberately not `client_name`:
+  the name is whatever the registrant typed and is never verified, so it is the
+  field an attacker uses to look legitimate (a test registration called
+  "Charter (totally legit)" makes the point). The origin is where the code will
+  actually be delivered. Consent is bound to the flow through the same signed
+  state and cookie as the rest of sign-in, so it cannot be replayed or skipped,
+  and it is per registered client rather than a one-time global dismissal.
+
+  **Forward path: Client ID Metadata Documents (CIMD).** A `SHOULD` in the
+  2026-07-28 draft, with dynamic client registration deprecated but retained for
+  back-compat. CIMD makes the client id a fetchable URL, so the consent screen
+  can show a name and origin the gateway *verified* rather than merely
+  displaying. That is what makes consent trustworthy instead of only present —
+  today's screen still asks a human to recognise an origin. Not implemented on
+  this branch; tracked as follow-up.
+
 - **Five moderate `npm audit` advisories are knowingly deferred**, all one
   root cause: a Windows path-traversal issue in `@hono/node-server` (used only
   by the MCP SDK's optional Node transport), reached transitively by

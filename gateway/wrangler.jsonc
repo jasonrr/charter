@@ -9,6 +9,11 @@
   "vars": {
     "CHARTER_CORE_URL": "https://charter.example.com",
     "CHARTER_ALLOWED_DOMAIN": "@example.com",
-    "GOOGLE_CLIENT_ID": ""
+    "GOOGLE_CLIENT_ID": "",
+    // Extra https origins a client may register a redirect URI on, beyond
+    // loopback and this gateway. Comma-separated; empty means closed.
+    // e.g. "https://vscode.dev,https://insiders.vscode.dev" for VS Code's
+    // non-loopback fallback. See docs/deployment/gateway.md.
+    "CHARTER_EXTRA_REDIRECT_ORIGINS": ""
   }
 }

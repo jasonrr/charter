@@ -37,6 +37,11 @@ import {
   TOOL_READ_DESCRIPTION,
   TOOL_READ_NAME,
 } from "./tools.js";
+import { escapeHtml } from "./html.js";
+import {
+  parseExtraOrigins,
+  screenRedirectUris,
+} from "./redirect_uri.js";
 import {
   clearStateCookie,
   importStateKey,
@@ -58,6 +63,12 @@ export type Env = {
   GOOGLE_CLIENT_SECRET: string;
   /** wrangler secret put OAUTH_STATE_SECRET — HMAC key for the sign-in state (state.ts). */
   OAUTH_STATE_SECRET: string;
+  /**
+   * Optional, comma-separated. Extra https origins a registered client may use
+   * as a redirect URI, beyond loopback and the gateway itself. Defaults to
+   * closed; see redirect_uri.ts for why the default is narrow.
+   */
+  CHARTER_EXTRA_REDIRECT_ORIGINS?: string;
   /** Not a wrangler binding — OAuthProvider injects this before calling a handler. */
   OAUTH_PROVIDER: OAuthHelpers;
 };
@@ -241,6 +252,52 @@ function browserError(message: string, status: number): Response {
   });
 }
 
+/**
+ * The consent interstitial.
+ *
+ * Deliberately shows the redirect URI's **origin** and nothing else
+ * identifying: `client_name` is supplied at registration by whoever registers,
+ * is never verified, and is therefore the field an attacker would use to look
+ * like charter. The origin is where the code will actually be delivered.
+ *
+ * Every interpolation is escaped — this is the only HTML the gateway emits, and
+ * the origin on it comes from a client anyone can register.
+ */
+function consentPage(redirectOrigin: string, state: string): string {
+  const origin = escapeHtml(redirectOrigin);
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Connect to charter</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 34rem; margin: 4rem auto; padding: 0 1.25rem; }
+  .origin { font: 600 1.05rem/1.4 ui-monospace, monospace; word-break: break-all;
+            background: #f4f4f5; border: 1px solid #d4d4d8; border-radius: 6px; padding: .75rem 1rem; }
+  .warn { color: #7f1d1d; background: #fef2f2; border: 1px solid #fecaca;
+          border-radius: 6px; padding: .75rem 1rem; }
+  button { font: inherit; padding: .6rem 1.25rem; border-radius: 6px; border: 0;
+           background: #1d4ed8; color: #fff; cursor: pointer; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #18181b; color: #e4e4e7; }
+    .origin { background: #27272a; border-color: #3f3f46; }
+    .warn { color: #fecaca; background: #300f0f; border-color: #7f1d1d; }
+  }
+</style></head><body>
+<h1>Connect an app to charter?</h1>
+<p>After you sign in with Google, charter will send this app an authorization
+code. The code will go to:</p>
+<p class="origin">${origin}</p>
+<p class="warn"><strong>Only continue if you started this yourself</strong> from
+your own MCP client. If you reached this page from a link someone sent you, the
+address above may belong to them — continuing would let them act as you in
+charter.</p>
+<form method="POST" action="/authorize/continue">
+  <input type="hidden" name="state" value="${escapeHtml(state)}">
+  <button type="submit">Continue to Google</button>
+</form>
+</body></html>`;
+}
+
 const authHandler = {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -263,11 +320,17 @@ const authHandler = {
     if (url.pathname === "/authorize") {
       let state: string;
       let flow: Flow;
+      let redirectOrigin: string;
       try {
         // @cloudflare/workers-oauth-provider parses and redirect-URI-checks the
         // client's request. We sign it and bind it to this browser before
         // handing it to Google — see state.ts for why both halves are needed.
         const authRequest = await env.OAUTH_PROVIDER.parseAuthRequest(request);
+        // The origin, not client_name: the name is whatever the registrant
+        // typed and is never verified, so it is the one field an attacker would
+        // use to look legitimate. The origin is where the authorization code
+        // will actually be sent, which is the thing they cannot fake.
+        redirectOrigin = new URL(authRequest.redirectUri).origin;
         flow = mintFlow();
         state = await sealState(
           await importStateKey(env.OAUTH_STATE_SECRET),
@@ -289,13 +352,55 @@ const authHandler = {
           400,
         );
       }
-      // Response.redirect() cannot carry Set-Cookie, and the cookie is the
-      // half of the CSRF defence a signature cannot provide.
+      // Ask before forwarding to Google. The MCP spec's authorization Security
+      // Considerations require it for exactly this architecture — one static
+      // upstream client id, open registration, forwarding to a third-party
+      // authorization server:
+      //
+      //   "MCP proxy servers using static client IDs MUST obtain user consent
+      //    for each dynamically registered client before forwarding to third-
+      //    party authorization servers (which may require additional consent)."
+      //
+      // The cookie rides along here, not on the eventual redirect to Google,
+      // because Response.redirect() cannot carry Set-Cookie anyway and the
+      // consent POST needs it to prove the same browser is still driving.
+      return new Response(consentPage(redirectOrigin, state), {
+        status: 200,
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Set-Cookie": setStateCookie(flow),
+          // Nothing on this page loads or runs anything; say so, so a future
+          // edit that adds a script fails loudly instead of silently working.
+          "Content-Security-Policy":
+            "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'",
+          "Referrer-Policy": "no-referrer",
+        },
+      });
+    }
+
+    // The consent click. Same signed state, same cookie — no second mechanism.
+    if (url.pathname === "/authorize/continue" && request.method === "POST") {
+      let submitted = "";
+      try {
+        submitted = String((await request.formData()).get("state") ?? "");
+      } catch {
+        return browserError("invalid consent submission", 400);
+      }
+      const opened = await openState(
+        await importStateKey(env.OAUTH_STATE_SECRET),
+        submitted,
+        request.headers.get("Cookie"),
+        Math.floor(Date.now() / 1000),
+      );
+      if (!opened.ok) return browserError(opened.reason, 400);
+
       return new Response(null, {
         status: 302,
         headers: {
-          Location: buildAuthorizeUrl(googleConfig(env, request.url), state),
-          "Set-Cookie": setStateCookie(flow),
+          Location: buildAuthorizeUrl(
+            googleConfig(env, request.url),
+            submitted,
+          ),
         },
       });
     }
@@ -382,7 +487,7 @@ const authHandler = {
 // fixed to `unknown` rather than leaving it generic, so no handler that names
 // its own Env is assignable. The casts buy back the Env typing above; the
 // provider passes the Worker's real env through untouched.
-export default new OAuthProvider({
+const provider = new OAuthProvider({
   apiRoute: "/mcp",
   apiHandler: apiHandler as unknown as OAuthProviderOptions["apiHandler"],
   defaultHandler:
@@ -391,3 +496,83 @@ export default new OAuthProvider({
   tokenEndpoint: "/token",
   clientRegistrationEndpoint: "/register",
 });
+
+function oauthError(error: string, description: string, status: number): Response {
+  return new Response(JSON.stringify({ error, error_description: description }), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/**
+ * Screen dynamic client registration before the provider ever sees it.
+ *
+ * The provider accepts any `redirect_uris` a caller sends, which is what made
+ * the confused-deputy attack possible: register a client pointing at your own
+ * server, phish a victim through a real Google consent, collect their code.
+ * Constraining the URI is the control that *prevents* that; the consent screen
+ * only warns about it. See redirect_uri.ts.
+ */
+async function screenRegistration(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response | null> {
+  let body: unknown;
+  try {
+    // Clone so the provider still gets an unread body to parse itself.
+    body = await request.clone().json();
+  } catch {
+    return null; // not JSON — let the provider produce its own error
+  }
+  if (!body || typeof body !== "object") return null;
+
+  const requested = (body as { redirect_uris?: unknown }).redirect_uris;
+  if (requested === undefined) return null; // the provider will reject it
+
+  const { accepted, rejected } = screenRedirectUris(
+    requested,
+    new URL(request.url).origin,
+    parseExtraOrigins(env.CHARTER_EXTRA_REDIRECT_ORIGINS),
+  );
+
+  if (accepted.length === 0) {
+    return oauthError(
+      "invalid_redirect_uri",
+      "charter only registers clients whose redirect_uris are loopback " +
+        "addresses (http://localhost, http://127.0.0.1, http://[::1]) or https " +
+        `URIs on ${new URL(request.url).origin}. A redirect URI on any other ` +
+        "host could deliver a signed-in user's authorization code to someone " +
+        "who is not that user. Rejected: " +
+        rejected.map((r) => `${r.uri} (${r.reason})`).join("; "),
+      400,
+    );
+  }
+
+  if (rejected.length === 0) return null; // nothing to change
+
+  // Register the acceptable subset rather than failing the whole call: real
+  // clients send mixed arrays (VS Code registers loopback *and* vscode.dev in
+  // one request), and refusing outright would lock out a client whose primary
+  // loopback flow is fine. RFC 7591 has the response echo what was registered.
+  return provider.fetch(
+    new Request(request, {
+      body: JSON.stringify({ ...(body as object), redirect_uris: accepted }),
+    }),
+    env,
+    ctx,
+  );
+}
+
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    if (
+      request.method === "POST" &&
+      new URL(request.url).pathname === "/register"
+    ) {
+      const screened = await screenRegistration(request, env, ctx);
+      if (screened) return screened;
+    }
+    return provider.fetch(request, env, ctx);
+  },
+};
