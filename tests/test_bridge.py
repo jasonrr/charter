@@ -480,6 +480,47 @@ def test_invalid_actor_token_without_key_is_audited(monkeypatch):
     assert recorded[0][1]["detail"] == "identity token rejected (ExpiredError)"
 
 
+def test_unauthenticated_actor_invalid_row_carries_no_unbounded_strings(monkeypatch):
+    # R4: this row is the one audit write reachable with no credential at all --
+    # a garbage X-Actor-Token is the whole trigger -- and it used to carry two
+    # unbounded attacker-controlled strings, `verb` and _target(body). The
+    # `denied` branch already drops the target; do the same here, and bound the
+    # verb, which still has to be in the row to be worth writing.
+    monkeypatch.setattr(main, "identify", lambda req: None)
+
+    def bad(req):
+        raise main.VerbError(401, "actor_invalid", "identity token rejected")
+
+    monkeypatch.setattr(auth, "actor_email", bad)
+    recorded = []
+    monkeypatch.setattr(main, "record", lambda *a, **k: recorded.append(a))
+    _parse(main.bridge(FakeRequest(body={
+        "verb": "v" * 5000,
+        "target": "t" * 100000,
+        "url": "u" * 100000,
+    })))
+    (_caller, verb, target, result), = recorded
+    assert result == "actor_invalid"
+    assert target is None
+    assert len(verb) <= 120
+
+
+def test_unauthenticated_actor_invalid_row_survives_a_non_string_verb(monkeypatch):
+    # Same row, bounded by slicing -- which would itself raise on a JSON object
+    # or array, reintroducing the unaudited bare 500 this is meant to prevent.
+    monkeypatch.setattr(main, "identify", lambda req: None)
+
+    def bad(req):
+        raise main.VerbError(401, "actor_invalid", "identity token rejected")
+
+    monkeypatch.setattr(auth, "actor_email", bad)
+    recorded = []
+    monkeypatch.setattr(main, "record", lambda *a, **k: recorded.append(a))
+    _body, status = _parse(main.bridge(FakeRequest(body={"verb": {"nope": 1}})))
+    assert status == 401
+    assert recorded[0][1] == ""
+
+
 def test_non_string_allow_element_yields_401_not_500(monkeypatch):
     # Same shape of hand-edit typo, one level deeper: `[["*"]]` for `["*"]`.
     # allowed() calls .endswith on each element from OUTSIDE bridge's try block.

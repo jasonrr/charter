@@ -103,6 +103,25 @@ def _target(body):
     return None
 
 
+# The actor_invalid row below is the one audit write reachable with no
+# credential at all -- a garbage X-Actor-Token is the whole trigger -- and
+# fail_open means nothing pushes back. Its target is dropped entirely (the
+# `denied` branch already does that) and its verb is bounded to this. Long
+# enough for any real verb by a wide margin; short enough that the row is not
+# a place to park data.
+_MAX_UNAUTHENTICATED_VERB = 120
+
+
+def _bounded_verb(verb):
+    """`verb` trimmed for an audit row written without a credential.
+
+    Non-strings become "": `verb` comes straight off the JSON body, so it can
+    be an object or an array, and slicing one raises -- which is the unaudited
+    bare 500 this branch exists to avoid.
+    """
+    return verb[:_MAX_UNAUTHENTICATED_VERB] if isinstance(verb, str) else ""
+
+
 @functions_framework.http
 def bridge(request):
     rid = str(uuid4())
@@ -119,7 +138,8 @@ def bridge(request):
             # Present-but-bad token: audited and answered here exactly as the
             # key path answers it below, so a forged or expired token is not
             # quieter just because it arrived without a key.
-            record(None, verb, target, e.code, rid=rid, detail=e.detail)
+            record(None, _bounded_verb(verb), None, e.code, rid=rid,
+                   detail=e.detail)
             return _json({"ok": False, "verb": verb, "error": e.code,
                           "detail": e.detail, "request_id": rid}, e.status)
         if caller is None and email:
