@@ -8,7 +8,11 @@
 > `gateway/src/` (with `gateway/test/`), `docs/deployment/gateway.md` for
 > operating it, and `docs/remote-mcp.md` for the design it satisfies.
 >
-> **Executing it would rebuild a closed account-takeover hole.** Task 4's
+> **Executing it would rebuild two closed defects, not one.** Both are marked
+> inline with ⛔ where they appear, because a reader who enters at a task heading
+> or greps for `wrangler secret put` never sees this banner.
+>
+> **One: a closed account-takeover hole.** Task 4's
 > `/authorize` here carries the OAuth request as `btoa(JSON.stringify(oauthReq))`
 > — unsigned, unbound state. That allowed an attacker to phish a victim through a
 > genuine Google consent and have the victim's identity bound to the attacker's
@@ -17,6 +21,15 @@
 > registration (`gateway/src/redirect_uri.ts`), and a required consent
 > interstitial. See `docs/remote-mcp.md` §4.7 and the "Sign-in is bound to one
 > browser" section of `docs/deployment/gateway.md`.
+>
+> **Two: a closed credential inversion (HIGH).** Task 1's `credHeaders` sends
+> `X-API-Key` on every call, Task 5's runbook tells you to mint that key, and the
+> Self-Review certifies both as spec compliance. Core resolves the key *before*
+> the actor token, so a gateway holding one authorizes every signed-in human with
+> its own allow-list and never reads `charter-grants`. This one survived its first
+> review precisely because the documentation asserted the opposite of the code.
+> What shipped is `authHeaders`, which sends a key only when there is no actor
+> token. See `docs/remote-mcp.md` §4.1.
 >
 > Three further things this plan says are no longer true: the module list is four
 > files (shipped: seven, adding `state.ts`, `redirect_uri.ts`, `html.ts`); the
@@ -82,6 +95,17 @@ All new code lives in a new top-level `gateway/` directory. It is a separate npm
   - `type CoreResult = { text: string; isError: boolean }`
   - `credHeaders(credential: string) -> Record<string, string>`
   - `callCore(fetchImpl: typeof fetch, cfg: CoreConfig, verb: string, args: object, opts: { readOnly?: boolean; actorToken?: string }) -> Promise<CoreResult>`
+
+> ⛔ **DO NOT BUILD THIS INTERFACE.** `credHeaders` and the packed
+> `CoreConfig.credential` are the *other* closed hole in this plan — a HIGH, and
+> the one that survived its first review because the documentation asserted the
+> opposite of the code. `credHeaders` splices `X-API-Key` in unconditionally, so
+> every signed-in human's call carries a key beside their actor token; core's
+> `bridge()` resolves the key first, so `charter-grants` is never read and every
+> human runs with the gateway's allow-list, audited as the key. What shipped is
+> `authHeaders(cfg, actorToken?)` — separate `CF_ACCESS_CLIENT_ID` /
+> `CF_ACCESS_CLIENT_SECRET`, and a key sent **only** when there is no actor
+> token. See `gateway/src/core.ts` and `docs/remote-mcp.md` §4.1.
 
 - [ ] **Step 1: Create the project scaffold**
 
@@ -185,6 +209,10 @@ function fakeFetch(status: number, body: string) {
   return { impl, seen };
 }
 
+// ⛔ DO NOT COPY THIS. These tests pin the credential inversion described in the
+// banner: they assert X-API-Key is always emitted, which is the defect. The
+// shipped suite tests authHeaders, whose central case is that a call carrying an
+// actor token sends NO key. See gateway/test/core.test.ts.
 describe("credHeaders", () => {
   it("splits the three-part credential, keeping colons in the api key", () => {
     expect(credHeaders("cfid:cfsecret:api:key:with:colons")).toEqual({
@@ -334,6 +362,13 @@ export type CoreConfig = {
 export type CoreResult = { text: string; isError: boolean };
 
 /**
+ * ⛔ DO NOT COPY THIS. Sends X-API-Key on every call, including a signed-in
+ * human's — core resolves the key before the actor token, so this silently
+ * replaces every human's grant with the gateway's own allow-list and makes
+ * charter-grants dead config. It is the HIGH named in the banner at the top of
+ * this file. The shipped version is authHeaders() in gateway/src/core.ts, which
+ * sends a key only when there is no actor token.
+ *
  * Split the one pasted credential into headers.
  *
  * "cf-client-id:cf-client-secret:api-key" is the composite form; CF ids and
@@ -396,6 +431,10 @@ export async function callCore(
     // Explicit UA: Cloudflare 1010-bans default client signatures at the edge,
     // before CF Access runs. Any non-default UA passes.
     "User-Agent": cfg.userAgent ?? "charter-gateway/0.1",
+    // ⛔ DO NOT COPY THIS. Spreading credHeaders unconditionally and then adding
+    // the actor token below is the inversion itself: both credentials go, and
+    // core honours the key. Shipped: ...authHeaders(cfg, opts.actorToken), which
+    // makes the two mutually exclusive.
     ...credHeaders(cfg.credential),
   };
   if (opts.actorToken) headers["X-Actor-Token"] = opts.actorToken;
@@ -1143,7 +1182,10 @@ export type Env = {
   CHARTER_CORE_URL: string;
   CHARTER_ALLOWED_DOMAIN: string;
   GOOGLE_CLIENT_ID: string;
-  /** wrangler secret put CHARTER_CREDENTIAL */
+  /** ⛔ DO NOT COPY THIS. wrangler secret put CHARTER_CREDENTIAL — the packed
+   * cf-id:cf-secret:api-key form, which bundles an API key into the gateway's
+   * credential. Gone, and ignored if still set. Shipped: CF_ACCESS_CLIENT_ID and
+   * CF_ACCESS_CLIENT_SECRET as separate secrets, no API key. */
   CHARTER_CREDENTIAL: string;
   /** wrangler secret put GOOGLE_CLIENT_SECRET */
   GOOGLE_CLIENT_SECRET: string;
@@ -1357,6 +1399,20 @@ The credential is the same composite form the proxy used. Mint its API key with
 gateway's own credential, not a human's. Human scope comes from grants
 (`docs/deployment/grants.md`), which core applies to the actor token.
 
+> ⛔ **DO NOT FOLLOW THESE INSTRUCTIONS.** This is the pre-fix runbook, and the
+> two paragraphs above are the exact pair that let the HIGH survive its first
+> review: mint an API key for the gateway, *and* claim human scope comes from
+> grants. Both cannot be true. Core's `bridge()` resolves `X-API-Key` before the
+> actor-token path, so with a key set the grants map is never read and every
+> signed-in human runs with the gateway's allow-list, audited as the key with the
+> human demoted to `on_behalf_of`.
+>
+> The live runbook is `docs/deployment/gateway.md`: **do not mint an API key for
+> the gateway.** `CHARTER_CREDENTIAL` is gone and ignored; set
+> `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`, `GOOGLE_CLIENT_SECRET` and
+> `OAUTH_STATE_SECRET` instead, and create `charter-grants` in core so signed-in
+> humans have any scope at all.
+
     npx wrangler deploy
 
 ## 4. Connect a client
@@ -1431,6 +1487,14 @@ git commit -m "docs: gateway runbook, repointed google client, sub-project B sta
 - §4.2 hosted translation, `charter_login` dropped — Task 3. ✓
 - §4.3 OAuth 2.1 + PKCE + no passthrough — Task 4 (`OAuthProvider`), verified in Task 4 Step 4 / Task 5 Step 2 by the `S256` metadata check; passthrough is structurally impossible since `callCore` only ever sends `credHeaders` + the Google token. ✓
 - §4.4 CF Access moves to the gateway — the credential is a Worker secret (Task 5 Step 3); `credHeaders` emits the CF headers. ✓
+
+> ⛔ **THESE TWO ✓ ARE WRONG, AND THAT IS THE LESSON.** They certify
+> `credHeaders` as §4.3/§4.4 compliance. It is the opposite: emitting the CF
+> headers *and* an API key on the same call is what §4.1 forbids, and a
+> self-review that reads the intent instead of the code is how the HIGH got
+> through. Two independent reviewers plus a hand-verification were needed to
+> catch it afterwards. §4.3's PKCE claim is also overstated — see
+> `docs/remote-mcp.md` §5, which records `S256` as offered but not required.
 - §4.5 no `args_path`/`out_path` — Task 3, with the reason in the module docstring. ✓
 - §4.6 audience, freshness, HubSpot out of scope — Task 2 (`freshIdToken`), Task 5 Step 2 (repoint), Task 3 (HubSpot excluded, documented). ✓
 - §5 stateless, no DO, SDK owns the era — Task 4 module docstring and Global Constraints. ✓
