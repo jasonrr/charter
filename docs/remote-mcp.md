@@ -33,9 +33,14 @@ Every authorization decision and every governed side effect belongs to core.
 Load-bearing consequence: **core verifies the Google ID token itself** — it
 already does (`actor_auth.actor_email`). The gateway *presents* the token; core
 *verifies* it. The gateway is never trusted to assert "this caller is
-jason@…". A compromised gateway therefore cannot forge an identity: it has no
-way to mint a Google-signed token. This is why §4.1 puts identity→scope in core
-rather than at the front door.
+jason@…". A compromised gateway cannot *invent* an identity — it has no way to
+mint a Google-signed token for someone who never enrolled. But it is not
+harmless: it holds every enrolled user's Google **refresh token** (§4.6's
+freshness mechanism), so a compromise means the attacker can mint *genuine* ID
+tokens and act as any enrolled user — bounded by that user's own grant, visible
+in core's audit, and only until the refresh tokens are revoked. What the
+invariant buys is that bound: identity→scope lives in core (§4.1), so the
+gateway's compromise surface is its users' existing grants, never more.
 
 ### 2.2 Invariant: core stands alone
 
@@ -65,7 +70,7 @@ boundary instead of a deployment detail.
 | **Tracks** | the MCP spec | charter semantics |
 | **Language/runtime** | TS on Workers (reference impl) | Python, GCP |
 | **Owns** | transport, OAuth, MCP↔verb translation, protected-resource metadata (§4.3) | verbs, packs, SDK, packtest |
-| **Holds** | core's CF-Access service token; no API key on a human's call (§4.1) | keys, grants policy, audit table |
+| **Holds** | core's CF-Access service token; every enrolled user's Google refresh token (encrypted OAuth grant store, §4.6); no API key on a human's call (§4.1) | keys, grants policy, audit table |
 | **Decides** | nothing governed | authorization, fail-closed |
 | **Writes audit** | never | always |
 | **Verifies identity token** | no (forwards it) | **yes** |
@@ -169,7 +174,10 @@ is charter vocabulary because it carries meaning — see §2.5.)*
 gateway, holding the service token, can reach core). Google ID token = identity
 (cryptographically verified **by core**; unforgeable by the gateway). Grants =
 authorization (fail-closed). A stolen grants file confers nothing; it names
-emails and verb patterns, not secrets.
+emails and verb patterns, not secrets. The valuable secret store on the gateway
+side is the OAuth grant KV — the refresh tokens (§2.1's compromise bound);
+recovering from a gateway compromise means revoking those upstream at Google,
+not rotating anything in core.
 
 ### 4.2 The gateway is the proxy's translation, hosted
 
