@@ -146,7 +146,9 @@ claude plugin install charter@charter
 
 One configuration value: `gateway_url` — your charter-gateway origin (from
 `docs/deployment/gateway.md`). No credential is pasted; sign-in happens in
-the browser on first use.
+the browser on first use. Other Claude surfaces can skip this plugin
+altogether and add the same gateway URL directly as a remote MCP server or
+custom connector.
 
 ## Step 7: End-to-end verify through the gateway
 

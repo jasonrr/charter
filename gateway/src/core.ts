@@ -1,7 +1,8 @@
 /**
  * Translation to charter-core.
  *
- * This is charter_mcp.js's callBridge(), minus the local-file tricks and minus
+ * This is the removed stdio proxy's callBridge() (see git history), minus the
+ * local-file tricks and minus
  * Node. One POST of {...args, verb} to core's single endpoint, through the
  * CF-Access tunnel, carrying — when a human is signed in — their Google ID
  * token as X-Actor-Token and nothing else that claims authority. Core verifies
@@ -106,7 +107,7 @@ function cutToBytes(text: string, budget: number): string {
 
 /**
  * Read a response body capped at MAX_RESPONSE_BYTES, streaming — the Workers
- * port of the stdio proxy's readCapped() (plugin/proxy/charter_mcp.js:353).
+ * port of the removed stdio proxy's readCapped() (see git history).
  * Buffering the full body first (as `res.text()` would) defeats the point of
  * a cap: a Worker isolate is more memory-constrained than the Node process
  * the original ran in, and isolates can be shared across concurrent

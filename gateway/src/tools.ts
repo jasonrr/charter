@@ -50,8 +50,8 @@ export const TOOL_CALL_DESCRIPTION =
   "verb dereferences, never a large inline body.";
 
 /**
- * Annotations, carried over verbatim from the stdio proxy
- * (plugin/proxy/charter_mcp.js:94 and :126).
+ * Annotations, carried over verbatim from the removed stdio proxy (see git
+ * history).
  *
  * They live beside the descriptions because they say the same thing in the
  * other register: TOOL_READ_DESCRIPTION tells a human charter_read is "safe to
