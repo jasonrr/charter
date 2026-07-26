@@ -371,8 +371,15 @@ const authHandler = {
           "Set-Cookie": setStateCookie(flow),
           // Nothing on this page loads or runs anything; say so, so a future
           // edit that adds a script fails loudly instead of silently working.
+          // frame-ancestors is the clickjacking control: a framed "Continue"
+          // posts cross-site and SameSite=Lax already withholds the cookie, but
+          // on the one page whose whole job is informed consent the protection
+          // should be stated outright, not left resting on a cookie attribute.
           "Content-Security-Policy":
-            "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'",
+            "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; " +
+            "frame-ancestors 'none'",
+          // For anything still reading the older header.
+          "X-Frame-Options": "DENY",
           "Referrer-Policy": "no-referrer",
         },
       });
@@ -394,12 +401,24 @@ const authHandler = {
       );
       if (!opened.ok) return browserError(opened.reason, 400);
 
+      // Re-seal with the consent recorded, so /callback can require it instead
+      // of assuming it. Same flow, so the cookie still matches; a fresh
+      // issued-at, because the Google leg has a human typing a password in it
+      // and should get its own full TTL rather than the remainder of this one.
+      const consentedState = await sealState(
+        await importStateKey(env.OAUTH_STATE_SECRET),
+        opened.authRequest,
+        opened.flow,
+        Math.floor(Date.now() / 1000),
+        true,
+      );
+
       return new Response(null, {
         status: 302,
         headers: {
           Location: buildAuthorizeUrl(
             googleConfig(env, request.url),
-            submitted,
+            consentedState,
           ),
         },
       });
@@ -415,6 +434,18 @@ const authHandler = {
         Math.floor(Date.now() / 1000),
       );
       if (!opened.ok) return browserError(opened.reason, 400);
+
+      // Require the consent flag rather than trusting that the screen was
+      // unavoidable. It is in practice — the state is disclosed only inside the
+      // consent page body, same-origin with no JS and no referrer, and the
+      // cookie is HttpOnly — but "in practice" is a property of today's code.
+      // This makes it a rule /callback enforces.
+      if (!opened.consented) {
+        return browserError(
+          "this sign-in was not confirmed. Start again from your client.",
+          400,
+        );
+      }
       const oauthReq = opened.authRequest as AuthRequest;
 
       // Re-check the redirect URI even though the state is now signed, and the
@@ -474,7 +505,7 @@ const authHandler = {
         status: 302,
         headers: {
           Location: redirectTo,
-          "Set-Cookie": clearStateCookie(opened.flowId),
+          "Set-Cookie": clearStateCookie(opened.flow.flowId),
         },
       });
     }

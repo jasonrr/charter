@@ -49,7 +49,8 @@ describe("sealState / openState", () => {
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.authRequest).toEqual(REQ);
-      expect(r.flowId).toBe(f.flowId);
+      expect(r.flow).toEqual(f);
+      expect(r.consented).toBe(false);
     }
   });
 
@@ -217,6 +218,29 @@ describe("sealState / openState", () => {
     );
     const r = await openState(k, `${body}.${mac}`, jar(f), NOW);
     expect(r).toEqual({ ok: false, reason: "malformed state" });
+  });
+
+  // /callback requires this flag, so it has to survive the round trip and must
+  // not be forgeable without the key — the signature covers it like everything
+  // else in the payload.
+  it("round-trips the consent flag", async () => {
+    const k = await key();
+    const f = mintFlow();
+    const consented = await openState(k, await sealState(k, REQ, f, NOW, true), jar(f), NOW);
+    const plain = await openState(k, await sealState(k, REQ, f, NOW), jar(f), NOW);
+    expect(consented.ok && consented.consented).toBe(true);
+    expect(plain.ok && plain.consented).toBe(false);
+  });
+
+  it("cannot have consent flipped on without the key", async () => {
+    const k = await key();
+    const f = mintFlow();
+    const state = await sealState(k, REQ, f, NOW);
+    const forgedBody = b64urlOfText(
+      JSON.stringify({ r: REQ, n: f.nonce, f: f.flowId, t: NOW, c: true }),
+    );
+    const r = await openState(k, `${forgedBody}.${state.split(".")[1]}`, jar(f), NOW);
+    expect(r).toEqual({ ok: false, reason: "bad state signature" });
   });
 
   it("mints a distinct nonce and flow id each time", () => {

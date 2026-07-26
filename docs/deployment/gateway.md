@@ -56,6 +56,12 @@ with). Always invoke it via `npx wrangler` (or `npm run deploy`) from
     npx wrangler kv namespace create OAUTH_KV
     # put the returned id into wrangler.jsonc's kv_namespaces entry
 
+**Use a fresh namespace.** Redirect URIs are screened at *registration* time, so
+any client already in an existing `OAUTH_KV` keeps whatever URIs it registered
+under the old rules and bypasses the control entirely. If you reuse a namespace
+from before that screening existed, purge its `client:*` records first and make
+the clients re-register.
+
 Set the non-secret values in `wrangler.jsonc` → `vars`:
 
 - `CHARTER_CORE_URL` — your core endpoint, https only
@@ -264,6 +270,15 @@ here.
   actually be delivered. Consent is bound to the flow through the same signed
   state and cookie as the rest of sign-in, so it cannot be replayed or skipped,
   and it is per registered client rather than a one-time global dismissal.
+  `/callback` *requires* a consent flag carried inside the signed state, so the
+  screen cannot be skipped by construction rather than by circumstance.
+
+  **Widening `CHARTER_EXTRA_REDIRECT_ORIGINS` re-opens this attack** for any
+  client that registers on an origin you add. An attacker who can host a page on
+  that origin — or who controls any app already hosted there — can register a
+  client pointing at it and collect a phished user's authorization code, exactly
+  as before. Add an origin only when you control what can be served from it, and
+  prefer telling a client to use its loopback flow.
 
   **Forward path: Client ID Metadata Documents (CIMD).** A `SHOULD` in the
   2026-07-28 draft, with dynamic client registration deprecated but retained for

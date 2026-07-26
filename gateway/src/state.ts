@@ -53,7 +53,13 @@ export function stateCookieName(flowId: string): string {
 export type Flow = { flowId: string; nonce: string };
 
 export type OpenResult =
-  | { ok: true; authRequest: unknown; flowId: string }
+  | {
+      ok: true;
+      authRequest: unknown;
+      /** The flow this state belongs to — enough to re-seal or clear its cookie. */
+      flow: Flow;
+      consented: boolean;
+    }
   | { ok: false; reason: string };
 
 type Payload = {
@@ -65,6 +71,8 @@ type Payload = {
   f: string;
   /** issued-at, epoch seconds */
   t: number;
+  /** the user has clicked through the consent screen */
+  c?: boolean;
 };
 
 function b64urlEncode(bytes: Uint8Array): string {
@@ -118,17 +126,26 @@ export function mintFlow(): Flow {
   return { flowId: mintNonce(), nonce: mintNonce() };
 }
 
+/**
+ * `consented` is inside the signed payload, not a separate cookie or a KV row,
+ * so /callback can *require* it rather than infer it. Before this the consent
+ * screen was unskippable only by circumstance — the state was disclosed solely
+ * in the consent page body and the cookie was HttpOnly — which made the
+ * guarantee incidental. A flag the signature covers makes it enforced.
+ */
 export async function sealState(
   key: CryptoKey,
   authRequest: unknown,
   flow: Flow,
   issuedAt: number,
+  consented = false,
 ): Promise<string> {
   const payload: Payload = {
     r: authRequest,
     n: flow.nonce,
     f: flow.flowId,
     t: issuedAt,
+    ...(consented ? { c: true } : {}),
   };
   // Encode to bytes before base64: the client's own `state` rides inside this
   // and may hold characters btoa alone would reject.
@@ -205,7 +222,12 @@ export async function openState(
   if (!payload.r || typeof payload.r !== "object") {
     return { ok: false, reason: "malformed state" };
   }
-  return { ok: true, authRequest: payload.r, flowId: payload.f };
+  return {
+    ok: true,
+    authRequest: payload.r,
+    flow: { flowId: payload.f, nonce: cookieNonce },
+    consented: payload.c === true,
+  };
 }
 
 /** Read one cookie out of a request's Cookie header. */
