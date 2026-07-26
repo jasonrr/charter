@@ -202,6 +202,50 @@ describe("exchangeCode", () => {
     expect(caught).toBeInstanceOf(Error);
     expect((caught as Error).message.length).toBeLessThan(huge.length);
   });
+
+  it("redacts a secret fully inside the cap (baseline, still holds)", async () => {
+    const secret = "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Value1234567890";
+    const cfgWithSecret: GoogleConfig = { ...CFG, clientSecret: secret };
+    const impl = (async () =>
+      new Response(`upstream failure ${secret} more text`, { status: 500 })) as unknown as typeof fetch;
+    let caught: unknown;
+    try {
+      await exchangeCode(impl, cfgWithSecret, "c");
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).not.toContain(secret);
+  });
+
+  it("redacts a secret even when truncation would otherwise cut it in half (regression)", async () => {
+    // Redact-then-truncate: if the cap ran BEFORE redaction, slicing mid-secret
+    // would leave safe() with no whole-string match, letting a fragment
+    // survive into a browser-visible error. Position the secret so it
+    // straddles character 500 of the raw upstream body (the cap size) —
+    // that's where a truncate-first implementation would cut.
+    const secret = "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Value1234567890"; // 51 chars
+    const cfgWithSecret: GoogleConfig = { ...CFG, clientSecret: secret };
+    const strad = 20; // how far into the secret the 500-char cap would land
+    const bodyPrefixLen = 500 - strad;
+    const body = "y".repeat(bodyPrefixLen) + secret + "z".repeat(200);
+    const impl = (async () => new Response(body, { status: 500 })) as unknown as typeof fetch;
+
+    let caught: unknown;
+    try {
+      await exchangeCode(impl, cfgWithSecret, "c");
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    const msg = (caught as Error).message;
+    // A whole-secret check alone would pass against the broken (truncate-then-redact)
+    // code, since the whole secret no longer appears once it's been sliced in half —
+    // only a fragment does. Check for interior substrings instead.
+    expect(msg).not.toContain(secret.slice(0, 15));
+    expect(msg).not.toContain(secret.slice(15, 30));
+    expect(msg).not.toContain(secret.slice(30, 51));
+  });
 });
 
 describe("freshIdToken", () => {

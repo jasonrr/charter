@@ -102,11 +102,14 @@ async function tokenRequest(
   });
   const text = await res.text();
   if (res.status < 200 || res.status >= 300) {
+    // Redact BEFORE truncating: cutting the body first can slice a secret in
+    // half, leaving a fragment safe() no longer has a full match to remove.
+    const redacted = safe(`google token endpoint returned ${res.status}: ${text}`, cfg);
     const capped =
-      text.length > MAX_UPSTREAM_ERROR_CHARS
-        ? `${text.slice(0, MAX_UPSTREAM_ERROR_CHARS)}…[truncated]`
-        : text;
-    throw new Error(safe(`google token endpoint returned ${res.status}: ${capped}`, cfg));
+      redacted.length > MAX_UPSTREAM_ERROR_CHARS
+        ? `${redacted.slice(0, MAX_UPSTREAM_ERROR_CHARS)}…[truncated]`
+        : redacted;
+    throw new Error(capped);
   }
   try {
     return JSON.parse(text);
