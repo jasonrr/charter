@@ -12,7 +12,7 @@
  * state of its own; the only state is the OAuth grant, which
  * @cloudflare/workers-oauth-provider persists (encrypted) in KV.
  */
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpHandler } from "agents/mcp";
 import OAuthProvider, {
   type AuthRequest,
@@ -38,6 +38,7 @@ import {
   TOOL_READ_DESCRIPTION,
   TOOL_READ_NAME,
 } from "./tools.js";
+import { readResult, RESULT_URI_PREFIX } from "./results.js";
 import { escapeHtml } from "./html.js";
 import { isAuthRoute } from "./routes.js";
 import {
@@ -176,7 +177,7 @@ function coreConfig(env: Env): CoreConfig {
  * JSON-RPC envelope. Resolving it at the request boundary is what makes that
  * status code reachable.
  */
-function buildServer(env: Env, actorToken: string): McpServer {
+export function buildServer(env: Env, actorToken: string): McpServer {
   // A fresh server per request: the SDK (>=1.26.0) refuses to reconnect one.
   const server = new McpServer({ name: "charter", version: "0.1.0" });
 
@@ -203,6 +204,30 @@ function buildServer(env: Env, actorToken: string): McpServer {
       annotations: TOOL_CALL_ANNOTATIONS,
     },
     (a) => run(TOOL_CALL_NAME, a),
+  );
+
+  // §4.5 resource-link-out: the dereference surface for offloaded results.
+  // { list: undefined } = readable, never listed — a result id is one caller's
+  // one-off artifact, not a catalog entry. The read re-authorizes through core
+  // (result.read is producer-only), carrying this request's actor token; the
+  // gateway still decides nothing and stores nothing (§2.1, §2.4).
+  server.registerResource(
+    "result",
+    new ResourceTemplate(`${RESULT_URI_PREFIX}{id}`, { list: undefined }),
+    {
+      title: "Offloaded verb result",
+      description:
+        "Full body of a verb result that was too large to inline. Expires; re-run the verb to regenerate.",
+      mimeType: "application/json",
+    },
+    async (uri, variables) => {
+      const id = String(variables.id ?? "");
+      const r = await readResult(fetch, coreConfig(env), id, actorToken);
+      if (r.isError) throw new Error(r.text);
+      return {
+        contents: [{ uri: uri.href, mimeType: "application/json", text: r.text }],
+      };
+    },
   );
   return server;
 }
