@@ -17,6 +17,7 @@
  * scheduling and display. Core performs the verification that authorizes
  * anything at all (§2.1).
  */
+import { redact } from "./redact.js";
 
 const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -83,18 +84,17 @@ export function buildAuthorizeUrl(cfg: GoogleConfig, state: string): string {
   return u.toString();
 }
 
-/** Redact the client secret from anything that might reach a log or a client. */
-function safe(message: string, cfg: GoogleConfig): string {
-  return cfg.clientSecret
-    ? message.split(cfg.clientSecret).join("[redacted]")
-    : message;
-}
+/** The fields this module actually reads off Google's token endpoint response. */
+type TokenResponse = {
+  id_token?: string;
+  refresh_token?: string;
+};
 
 async function tokenRequest(
   fetchImpl: typeof fetch,
   cfg: GoogleConfig,
   form: Record<string, string>,
-): Promise<any> {
+): Promise<TokenResponse> {
   const res = await fetchImpl(TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -103,8 +103,11 @@ async function tokenRequest(
   const text = await res.text();
   if (res.status < 200 || res.status >= 300) {
     // Redact BEFORE truncating: cutting the body first can slice a secret in
-    // half, leaving a fragment safe() no longer has a full match to remove.
-    const redacted = safe(`google token endpoint returned ${res.status}: ${text}`, cfg);
+    // half, leaving a fragment redact() no longer has a full match to remove.
+    const redacted = redact(
+      `google token endpoint returned ${res.status}: ${text}`,
+      [cfg.clientSecret],
+    );
     const capped =
       redacted.length > MAX_UPSTREAM_ERROR_CHARS
         ? `${redacted.slice(0, MAX_UPSTREAM_ERROR_CHARS)}…[truncated]`
@@ -174,7 +177,7 @@ export async function freshIdToken(
     return { idToken: identity.idToken, identity };
   }
 
-  let body: any;
+  let body: TokenResponse;
   try {
     body = await tokenRequest(fetchImpl, cfg, {
       client_id: cfg.clientId,

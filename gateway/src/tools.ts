@@ -23,7 +23,7 @@ export const TOOL_CALL_NAME = "charter_call";
 
 export const TOOL_INPUT_SHAPE = {
   verb: z.string().describe("e.g. verbs.list or data.warehouse.query"),
-  args: z.record(z.any()).optional().describe("verb arguments (default {})"),
+  args: z.record(z.unknown()).optional().describe("verb arguments (default {})"),
 };
 
 export const TOOL_READ_DESCRIPTION =

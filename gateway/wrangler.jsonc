@@ -10,6 +10,12 @@
     "CHARTER_CORE_URL": "https://charter.example.com",
     "CHARTER_ALLOWED_DOMAIN": "@example.com",
     "GOOGLE_CLIENT_ID": "",
+    // This gateway's own canonical origin — replace with the real hostname
+    // you deploy to. Pins which redirect URIs a dynamically registered
+    // client may claim as "this gateway" (src/index.ts's screenRegistration);
+    // deliberately not read off the incoming request. See
+    // docs/deployment/gateway.md.
+    "CHARTER_GATEWAY_URL": "https://charter-gateway.example.workers.dev",
     // Extra https origins a client may register a redirect URI on, beyond
     // loopback and this gateway. Comma-separated; empty means closed.
     // e.g. "https://vscode.dev,https://insiders.vscode.dev" for VS Code's

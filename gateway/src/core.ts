@@ -11,6 +11,7 @@
  * fetch is a parameter, not a global, so every branch here is unit-testable
  * without a Worker runtime or a network.
  */
+import { redact } from "./redact.js";
 
 /** 1 MB, matching the stdio proxy's cap on what may enter a model's context. */
 const MAX_RESPONSE_BYTES = 1 << 20;
@@ -40,6 +41,8 @@ export type CoreConfig = {
 };
 
 export type CoreResult = { text: string; isError: boolean };
+
+type CappedBody = { text: string; truncated: boolean };
 
 /**
  * The credential headers for one call to core.
@@ -71,17 +74,9 @@ export function authHeaders(
   return headers;
 }
 
-/** Strip anything credential-shaped out of text bound for a model or a log. */
-function scrub(text: string, cfg: CoreConfig): string {
-  let out = text;
-  for (const secret of [
-    cfg.cfAccessClientId,
-    cfg.cfAccessClientSecret,
-    cfg.apiKey,
-  ]) {
-    if (secret && secret.length >= 4) out = out.split(secret).join("[redacted]");
-  }
-  return out;
+/** This config's credentials, as the list `redact()` wants. */
+function coreSecrets(cfg: CoreConfig): (string | undefined)[] {
+  return [cfg.cfAccessClientId, cfg.cfAccessClientSecret, cfg.apiKey];
 }
 
 /**
@@ -95,9 +90,9 @@ function scrub(text: string, cfg: CoreConfig): string {
  * UTF-16 code units — a body full of multi-byte characters no longer runs
  * well past the cap before truncating.
  */
-async function readCapped(res: Response): Promise<string> {
+async function readCapped(res: Response): Promise<CappedBody> {
   const body = res.body;
-  if (!body) return res.text(); // e.g. an empty body under some runtimes
+  if (!body) return { text: await res.text(), truncated: false }; // e.g. an empty body under some runtimes
 
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
@@ -137,7 +132,7 @@ async function readCapped(res: Response): Promise<string> {
   // in; this tolerates that with a replacement char instead of throwing.
   let text = new TextDecoder("utf-8").decode(combined);
   if (truncated) text += TRUNCATE_SUFFIX;
-  return text;
+  return { text, truncated };
 }
 
 export async function callCore(
@@ -187,14 +182,22 @@ export async function callCore(
     });
   } catch (e) {
     return {
-      text: scrub(`request failed: ${(e as Error).message}`, cfg),
+      text: redact(`request failed: ${(e as Error).message}`, coreSecrets(cfg)),
       isError: true,
     };
   }
 
-  const text = await readCapped(res);
+  const { text, truncated } = await readCapped(res);
   if (res.status >= 200 && res.status < 300) {
-    return { text, isError: false };
+    // ponytail: `isError: truncated` is an interim fix, not resource-link-out
+    // (docs/remote-mcp.md §4.5). Truncated JSON is unparseable, and a 2xx
+    // telling the model it succeeded anyway is the failure mode that section
+    // argues against — so a truncated body is reported as an error even
+    // though the HTTP call itself succeeded.
+    return { text: redact(text, coreSecrets(cfg)), isError: truncated };
   }
-  return { text: scrub(`HTTP ${res.status}: ${text}`, cfg), isError: true };
+  return {
+    text: redact(`HTTP ${res.status}: ${text}`, coreSecrets(cfg)),
+    isError: true,
+  };
 }

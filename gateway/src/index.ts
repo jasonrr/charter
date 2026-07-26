@@ -39,6 +39,7 @@ import {
   TOOL_READ_NAME,
 } from "./tools.js";
 import { escapeHtml } from "./html.js";
+import { isAuthRoute } from "./routes.js";
 import {
   parseExtraOrigins,
   screenRedirectUris,
@@ -58,6 +59,19 @@ export type Env = {
   CHARTER_CORE_URL: string;
   CHARTER_ALLOWED_DOMAIN: string;
   GOOGLE_CLIENT_ID: string;
+  /**
+   * The gateway's own canonical origin, e.g. "https://charter.example.com".
+   * Used ONLY to decide which redirect URIs a dynamically registered client
+   * may claim as "this gateway" (redirect_uri.ts, screenRegistration below) —
+   * pinned to configuration rather than read off the request so that a Worker
+   * reachable on a route it wasn't meant to answer can't have an
+   * attacker-chosen Host whitelisted as the gateway at registration time. A
+   * deploy that legitimately answers more than one hostname (see
+   * docs/deployment/gateway.md's "register every hostname" note) should add
+   * the others to CHARTER_EXTRA_REDIRECT_ORIGINS, same as any other trusted
+   * origin.
+   */
+  CHARTER_GATEWAY_URL: string;
   /** wrangler secret put CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET — the
    * service token for core's tunnel. Unset on a deploy whose core is not behind
    * CF Access. */
@@ -314,12 +328,10 @@ charter.</p>
 const authHandler = {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    const isAuthRoute =
-      url.pathname === "/authorize" || url.pathname === "/callback";
 
     // Fail closed and fail named. In particular there is no unsigned-state
     // fallback: without OAUTH_STATE_SECRET the sign-in routes do not run.
-    const missing = isAuthRoute ? missingConfig(env) : [];
+    const missing = isAuthRoute(url.pathname) ? missingConfig(env) : [];
     if (missing.length > 0) {
       return browserError(
         "charter-gateway is not fully configured; sign-in is disabled.\n\n" +
@@ -382,6 +394,11 @@ const authHandler = {
         headers: {
           "Content-Type": "text/html; charset=utf-8",
           "Set-Cookie": setStateCookie(flow),
+          // The signed `state` sits in this page's hidden input. A cache entry
+          // on shared or disk storage would keep it readable for the rest of
+          // its 10-minute window; the HttpOnly cookie still gates using it,
+          // but there's no reason to let it sit in a cache at all.
+          "Cache-Control": "no-store",
           // Nothing on this page loads or runs anything; say so, so a future
           // edit that adds a script fails loudly instead of silently working.
           // frame-ancestors is the clickjacking control: a framed "Continue"
@@ -471,6 +488,13 @@ const authHandler = {
           400,
         );
       }
+      // Sound, not merely convenient: `authRequest` is typed `unknown` in
+      // OpenResult so state.ts stays ignorant of AuthRequest's shape — but the
+      // value behind it is exactly what /authorize passed to sealState, JSON
+      // round-tripped through the signed state and handed back only after
+      // openState's HMAC check above passed. Nobody can produce a payload
+      // this function accepts other than by replaying one we ourselves signed,
+      // so nothing forged reaches this cast.
       const oauthReq = opened.authRequest as AuthRequest;
 
       // Re-check the redirect URI even though the state is now signed, and the
@@ -561,6 +585,26 @@ function oauthError(error: string, description: string, status: number): Respons
 }
 
 /**
+ * The origin `screenRegistration` treats as "this gateway", pinned to
+ * `CHARTER_GATEWAY_URL` rather than the incoming request's Host.
+ *
+ * A Worker can receive a request for a Host it was never meant to answer —
+ * see the field comment on Env. Reading the origin off `request.url` there
+ * let a registration made under an off-canonical Host get that host
+ * whitelisted as "the gateway" permanently: nothing at /callback re-derives
+ * or re-checks it against the current request (it only checks the registered
+ * client's own redirectUris list), so the acceptance made at registration
+ * time is the only gate that ever runs.
+ */
+function gatewayOrigin(env: Env): string {
+  try {
+    return new URL(env.CHARTER_GATEWAY_URL).origin;
+  } catch {
+    return "";
+  }
+}
+
+/**
  * Screen dynamic client registration before the provider ever sees it.
  *
  * The provider accepts any `redirect_uris` a caller sends, which is what made
@@ -586,9 +630,19 @@ async function screenRegistration(
   const requested = (body as { redirect_uris?: unknown }).redirect_uris;
   if (requested === undefined) return null; // the provider will reject it
 
+  const origin = gatewayOrigin(env);
+  if (!origin) {
+    return oauthError(
+      "server_error",
+      "charter-gateway is not configured with a valid CHARTER_GATEWAY_URL; " +
+        "registration is disabled.",
+      500,
+    );
+  }
+
   const { accepted, rejected } = screenRedirectUris(
     requested,
-    new URL(request.url).origin,
+    origin,
     parseExtraOrigins(env.CHARTER_EXTRA_REDIRECT_ORIGINS),
   );
 
@@ -597,7 +651,7 @@ async function screenRegistration(
       "invalid_redirect_uri",
       "charter only registers clients whose redirect_uris are loopback " +
         "addresses (http://localhost, http://127.0.0.1, http://[::1]) or https " +
-        `URIs on ${new URL(request.url).origin}. A redirect URI on any other ` +
+        `URIs on ${origin}. A redirect URI on any other ` +
         "host could deliver a signed-in user's authorization code to someone " +
         "who is not that user. Rejected: " +
         rejected.map((r) => `${r.uri} (${r.reason})`).join("; "),

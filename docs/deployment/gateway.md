@@ -67,6 +67,13 @@ Set the non-secret values in `wrangler.jsonc` → `vars`:
 - `CHARTER_CORE_URL` — your core endpoint, https only
 - `CHARTER_ALLOWED_DOMAIN` — e.g. `@yourdomain.com`, matching core's setting
 - `GOOGLE_CLIENT_ID` — from step 1
+- `CHARTER_GATEWAY_URL` — this gateway's own canonical origin, e.g.
+  `https://<your-gateway-host>`. Used only to decide which redirect URIs a
+  dynamically registered client may claim as "this gateway" — pinned here
+  rather than read off the request, so a Worker reachable on a Host it wasn't
+  meant to answer can't get that Host whitelisted at registration time. If you
+  answer more than one hostname (see "Register every hostname" above), add the
+  others to `CHARTER_EXTRA_REDIRECT_ORIGINS` below.
 - `CHARTER_EXTRA_REDIRECT_ORIGINS` — optional, comma-separated extra https
   origins clients may register redirect URIs on. Empty (closed) by default; see
   "Sign-in is bound to one browser" below before widening it.

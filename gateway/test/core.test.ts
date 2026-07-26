@@ -111,11 +111,13 @@ describe("callCore", () => {
     expect(seen).toHaveLength(0);
   });
 
-  it("truncates a response larger than the inline cap", async () => {
+  it("truncates a response larger than the inline cap and reports it as an error (X3)", async () => {
+    // Truncated JSON is unparseable; a 2xx would tell the model it succeeded
+    // anyway, the exact behavior docs/remote-mcp.md §4.5 argues against.
     const big = "x".repeat(1024 * 1024 + 10);
     const { impl } = fakeFetch(200, big);
     const r = await callCore(impl, CFG, "verbs.list", {}, {});
-    expect(r.isError).toBe(false);
+    expect(r.isError).toBe(true);
     expect(r.text.length).toBeLessThan(big.length);
     expect(r.text.endsWith("\n...[truncated]")).toBe(true);
   });
@@ -126,7 +128,7 @@ describe("callCore", () => {
     const big = "x".repeat(CAP_BYTES + 10);
     const { impl } = fakeFetch(200, big);
     const r = await callCore(impl, CFG, "verbs.list", {}, {});
-    expect(r.isError).toBe(false);
+    expect(r.isError).toBe(true);
     expect(r.text.endsWith("\n...[truncated]")).toBe(true);
     expect(new TextEncoder().encode(r.text).length).toBeLessThanOrEqual(CAP_BYTES);
   });
@@ -137,7 +139,7 @@ describe("callCore", () => {
     const big = "é".repeat(CAP_BYTES);
     const { impl } = fakeFetch(200, big);
     const r = await callCore(impl, CFG, "verbs.list", {}, {});
-    expect(r.isError).toBe(false);
+    expect(r.isError).toBe(true);
     expect(r.text.endsWith("\n...[truncated]")).toBe(true);
     expect(new TextEncoder().encode(r.text).length).toBeLessThanOrEqual(CAP_BYTES);
     // At most the final cut character decodes to a replacement char — no mess.
@@ -173,5 +175,17 @@ describe("callCore", () => {
     const r = await callCore(impl, CFG_WITH_KEY, "verbs.list", {}, {});
     expect(r.text).not.toContain("apikey");
     expect(r.text).not.toContain("cfsecret");
+  });
+
+  // S4: scrub() used to run only on the failure/non-2xx paths. If core ever
+  // echoed a request header (or anything credential-shaped) into a 200 body,
+  // the byte cap was the only control on that path — the credential would
+  // otherwise land verbatim in the model's context.
+  it("redacts a credential that leaks into a successful response body (S4)", async () => {
+    const { impl } = fakeFetch(200, '{"echo":"cfsecret and apikey leaked"}');
+    const r = await callCore(impl, CFG_WITH_KEY, "verbs.list", {}, {});
+    expect(r.isError).toBe(false);
+    expect(r.text).not.toContain("cfsecret");
+    expect(r.text).not.toContain("apikey");
   });
 });
