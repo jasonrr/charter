@@ -303,16 +303,35 @@ verb returns those (plus a preview) instead of printing them.
 `ponytail:` adopt the standard (reference-in, threshold-linked-out); no bespoke
 blob store, no per-payload special cases.
 
-**What ships until C does: a hard cap and an honest error.** Resource-link-out
-is sub-project C and is not built. The gateway meanwhile caps what it reads back
-from core at **1 MB** (`gateway/src/core.ts`, the same cap the stdio proxy had on
-what may enter a model's context), streaming rather than buffering, and appends
-`...[truncated]`. A truncated body is unparseable JSON, so a 2xx whose body was
-cut is returned with **`isError: true`** — telling the model the call succeeded
-and handing it a broken result is precisely the failure this section argues
-against, so the interim behaviour errs toward a failure the model can act on. It
-is an interim, not a design: a verb whose result can exceed 1 MB is unusable
-through the gateway until it returns a reference instead.
+**What C shipped: automatic offload + `result.read` + a gateway resource.**
+Core's `bridge()` measures every success envelope; past `MAX_INLINE_BYTES`
+(default 256 KiB) with `RESULTS_BUCKET` configured, the body is written to GCS
+(`src/charter/results.py` — producer- and verb-tagged, unguessable id) and the
+response becomes `{"ok": true, "verb", "request_id", "result_ref": {"id",
+"bytes", "mime"}}`. The gateway translates that envelope into an MCP
+`resource_link` (`charter://result/<id>`, a custom scheme the spec permits)
+and serves `resources/read` for it — an unlisted resource template — by
+calling the engine verb `result.read` with the caller's actor token. A
+dereference therefore re-authorizes through core like any other call:
+`result.read` is always-allowed (like `verbs.list`) because its authorization
+is *ownership* — core returns a blob only to the caller record that produced
+it, and a missing id answers exactly like someone else's id (`result_unknown`,
+404). References are unguessable *and* re-checked, not capability URLs.
+Objects expire by bucket lifecycle rule (one day — the deployment runbook owns
+it); core never deletes, and a vanished resource means "re-run the verb."
+
+Offload is fail-open and bridge-side: verbs keep returning plain dicts, so
+the authoring contract above costs pack authors nothing, and a dead bucket
+falls back to the inline body — which the gateway's 1 MB cap still bounds,
+with `isError: true` on truncation, exactly the pre-C interim behaviour, now
+as defense in depth. The dereference path reads at a larger cap (16 MiB,
+`gateway/src/results.ts`) because resource contents are fetched by the client
+on request rather than pushed into a model's context; a result past that cap
+fails honestly (§7.2 — no heavier blob apparatus). `structuredContent` +
+`outputSchema` remain deliberately unadopted: the two generic tools have no
+per-verb output schema to declare, and the spec has structured results also
+serialized into a text block, doubling their context cost — revisit with
+typed-verb work, not before.
 
 (Ordering note, because it is load-bearing in the other direction too:
 redaction runs *before* the byte cut, over-reading by the longest secret, so a
@@ -528,7 +547,7 @@ Broken per the writing-plans scope check; each ships and tests on its own.
 |---|---|---|---|
 | **A** | **Core: grants** — `identify_by_actor` + grants loader, fail-closed | nothing | **written** (`plans/2026-07-25-remote-mcp-grants.md`) |
 | **B** | **Gateway** — MCP over Streamable HTTP + OAuth federating Google; translates to core. Ships on whichever revision the SDK speaks; dual-era is automatic (§5) | A ✓, §5 ✓ | **landed** — the code is `gateway/src/`; the plan (`docs/superpowers/plans/2026-07-25-remote-mcp-gateway.md`) is **superseded, do not execute** |
-| **C** | **Payload contract** — adopt reference-in / resource-link-out (§4.5); inline blog+email, podcast takes a Drive reference; document in the pack-authoring skill | measurement ✓ | scoped by §4.5 |
+| **C** | **Payload contract** — adopt reference-in / resource-link-out (§4.5); inline blog+email, podcast takes a Drive reference; document in the pack-authoring skill | measurement ✓ | **landed** (plan: plans/2026-07-26-remote-mcp-payload-contract.md) |
 | **D** | **Distribution repackage + proxy removal** — plugin becomes a remote-HTTP pointer (`{"type":"http"}`) carrying skills; **delete** `plugin/proxy/` and `desktop-extension/`; update `INSTALL.md`/`distribution.md` | B | after B works |
 
 **Seam A↔B:** core accepts a caller derived from `X-Actor-Token` + grants,
@@ -603,6 +622,9 @@ build it until something actually needs it.
   Field practice (inputs by id/URI; outputs via `resource_link` past a size
   threshold): GitHub (1 MB), PostHog (12k-char spill), Notion/Linear/Sentry
   (cursor pagination).
+- MCP resources (2025-11-25): resources/read contract, custom URI schemes
+  permitted, access control is the server's (SHOULD).
+  https://modelcontextprotocol.io/specification/2025-11-25/server/resources
 - 2026-07-28 revision (verified 2026-07-25):
   [Key Changes / changelog](https://modelcontextprotocol.io/specification/draft/changelog)
   is authoritative; stateless SEP-2567/2575, routable headers SEP-2243, MRTR

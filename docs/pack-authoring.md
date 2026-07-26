@@ -53,6 +53,24 @@ Handlers return a dict. The engine wraps it with `ok: true` and adds
 - **Write verbs (confirm)**: return `{ "sent": [...], "skipped": [...], "target": "..." }`
 - **Errors**: raise `VerbError(status, code, detail)` — never raw exceptions
 
+## Payload Contract
+
+Reference in, reference out (docs/remote-mcp.md §4.5):
+
+- **Large inputs go by reference.** Take an id or URI and dereference inside
+  the handler (a Drive file id, a table name, a deal id) — never declare an
+  inline-base64 or large-body argument. The model authors small JSON;
+  pre-existing artifacts arrive as references.
+- **Large outputs are offloaded for you.** Return a plain dict. When the
+  deployment configures `RESULTS_BUCKET`, any success envelope over
+  `MAX_INLINE_BYTES` is stored server-side and the caller gets a `result_ref`
+  the gateway serves as an MCP resource. Do not build per-verb blob handling.
+- **Prefer diagnostics + a preview over bulk.** A verb that assembles a large
+  body should return its counts and byte size, not the body — the caller can
+  fetch the reference if it needs everything.
+- packtest's 1 MB response-budget check still applies to what you return:
+  it keeps a pack honest on deployments that run without a results bucket.
+
 ## The dry_run Convention
 
 Irreversible verbs should support `dry_run`:

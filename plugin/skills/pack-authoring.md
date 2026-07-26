@@ -27,6 +27,7 @@ Teach an AI coding agent to write a new charter pack.
    - `dry_run=True` for irreversible verbs that support preview (the handler checks `body.get("dry_run")`)
 
 5. **Handle errors with VerbError** — never raise raw exceptions. Every error gets a machine-matchable code.
+   - Large inputs by reference (id/URI, dereferenced in the handler); large outputs return automatically as a `result_ref` — never build per-verb blob handling.
 
 6. **Run conformance** — `charter-packtest --pack your.pack.module --json` or import `charter.packtest.checks.evaluate_pack` in a pytest.
 

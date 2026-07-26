@@ -191,6 +191,12 @@ Add the endpoint to `.mcp.json`:
 The client discovers the OAuth metadata, opens a browser, and you sign in with
 Google. No secret is pasted, and nothing is stored on your disk.
 
+Beyond the two tools (`charter_read`, `charter_call`), the gateway also serves
+one unlisted resource template, `charter://result/{id}`, backed by core's
+`result.read` with the caller's actor token — no new secrets, no new state;
+deployments without `RESULTS_BUCKET` on core simply never emit a `result_ref`,
+and the resource surface sits idle.
+
 ## Verifying
 
 Metadata endpoint:
@@ -330,10 +336,16 @@ In order:
   the model a broken result and tell it that it worked; instead a truncated
   response is returned with `isError: true` even though the HTTP call succeeded.
   The model sees a failure it can act on rather than silently wrong data. This
-  is an interim behaviour: the designed answer is resource-link-out
-  (`docs/remote-mcp.md` §4.5), which is sub-project C. Until then, a verb whose
-  result can exceed 1 MB is not usable through the gateway — narrow the query,
-  or have the verb return a reference.
+  is now defense in depth: the designed answer is resource-link-out
+  (`docs/remote-mcp.md` §4.5), which core's `bridge()` applies automatically
+  when `RESULTS_BUCKET` is configured — this cap only bites an unconfigured
+  deployment or a dead bucket.
+
+- **A result over 16 MiB is unfetchable through the gateway.**
+  `RESULT_FETCH_MAX_BYTES` (`gateway/src/results.ts`) bounds what
+  `resources/read` will pull back for a `charter://result/<id>` reference; a
+  result past that cap errors honestly rather than partially. Raise the
+  constant only with a reason.
 
 - **Sessions cost a Google round-trip past the one-hour mark.** The gateway
   re-mints the Google ID token on demand, but the re-minted token is never

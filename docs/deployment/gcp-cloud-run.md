@@ -32,6 +32,27 @@ curl -X POST $(gcloud run services describe charter --region us-central1 --forma
   -d '{"verb": "verbs.list"}'
 ```
 
+## Results bucket (§4.5 payload offload)
+
+Oversized verb results are offloaded to GCS and fetched back by reference
+(`result.read`). One bucket, private, with a lifecycle rule doing the
+expiry — core never deletes.
+
+    gcloud storage buckets create gs://$PROJECT-charter-results \
+      --project $PROJECT --location $REGION --uniform-bucket-level-access
+
+    cat > /tmp/charter-results-lifecycle.json <<'EOF'
+    {"rule": [{"action": {"type": "Delete"}, "condition": {"age": 1}}]}
+    EOF
+    gcloud storage buckets update gs://$PROJECT-charter-results \
+      --lifecycle-file=/tmp/charter-results-lifecycle.json
+
+    gcloud storage buckets add-iam-policy-binding gs://$PROJECT-charter-results \
+      --member "serviceAccount:$RUNTIME_SA" --role roles/storage.objectAdmin
+
+Then set `RESULTS_BUCKET=$PROJECT-charter-results` on the service. Leave it
+unset to disable offload (results stay inline; the gateway truncates at 1 MB).
+
 ## Docker / Kubernetes
 
 For Docker or K8s, use the same container image. The only runtime requirement

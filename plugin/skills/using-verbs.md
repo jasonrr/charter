@@ -34,5 +34,9 @@ Match on the `error` field:
 
 ## Large Payloads
 
-- `args_path` — read request body from a local JSON file (for bulk updates)
-- `out_path` — write response to a local file, get a summary back (for large query results)
+- Large **inputs** go by reference: pass an id or URI the verb dereferences
+  (a Drive file id, a table name) — never paste a large body into args.
+- Large **results** come back as a `resource_link` (`charter://result/<id>`)
+  instead of inline JSON. Read the linked resource only if the inline summary
+  is not enough — it is the full body. Links expire and are readable only by
+  the caller that produced them; if one is gone, re-run the verb.
