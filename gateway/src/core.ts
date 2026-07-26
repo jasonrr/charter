@@ -80,6 +80,31 @@ function coreSecrets(cfg: CoreConfig): (string | undefined)[] {
 }
 
 /**
+ * How far past the cap to read so that redaction can still see a whole secret.
+ *
+ * The truncation cut is a blind byte offset: a credential that happens to
+ * straddle it is sliced in half, and redact() matches whole strings, so the
+ * leading half has nothing left to match and reaches the model verbatim.
+ * Over-reading by the longest secret guarantees that any secret beginning at
+ * or before the cut is *wholly* present when redact() runs.
+ */
+function redactionMargin(secrets: (string | undefined)[]): number {
+  const enc = new TextEncoder();
+  let max = 0;
+  for (const s of secrets) if (s) max = Math.max(max, enc.encode(s).length);
+  return max;
+}
+
+/** Cut `text` to at most `budget` UTF-8 bytes, tolerating a mid-character cut. */
+function cutToBytes(text: string, budget: number): string {
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length <= budget) return text;
+  // Default (non-fatal) decode: the slice can land mid-character; this
+  // tolerates that with a replacement char instead of throwing.
+  return new TextDecoder("utf-8").decode(bytes.subarray(0, budget));
+}
+
+/**
  * Read a response body capped at MAX_RESPONSE_BYTES, streaming — the Workers
  * port of the stdio proxy's readCapped() (plugin/proxy/charter_mcp.js:353).
  * Buffering the full body first (as `res.text()` would) defeats the point of
@@ -89,28 +114,39 @@ function coreSecrets(cfg: CoreConfig): (string | undefined)[] {
  * Reading the stream also means the cap is counted in actual bytes, not
  * UTF-16 code units — a body full of multi-byte characters no longer runs
  * well past the cap before truncating.
+ *
+ * Redaction happens HERE, before the cut, not at the call site afterwards —
+ * see redactionMargin. The returned text is already redacted; callers must not
+ * truncate it further.
  */
-async function readCapped(res: Response): Promise<CappedBody> {
+async function readCapped(
+  res: Response,
+  secrets: (string | undefined)[],
+): Promise<CappedBody> {
   const body = res.body;
-  if (!body) return { text: await res.text(), truncated: false }; // e.g. an empty body under some runtimes
+  if (!body) {
+    // e.g. an empty body under some runtimes
+    return { text: redact(await res.text(), secrets), truncated: false };
+  }
 
+  const readLimit = MAX_RESPONSE_BYTES + redactionMargin(secrets);
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
-  let truncated = false;
+  let stopped = false;
 
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
     if (!value || value.length === 0) continue;
-    if (total >= MAX_RESPONSE_BYTES) {
-      truncated = true;
+    if (total >= readLimit) {
+      stopped = true;
       break;
     }
-    if (total + value.length > MAX_RESPONSE_BYTES) {
-      chunks.push(value.subarray(0, MAX_RESPONSE_BYTES - total));
-      total = MAX_RESPONSE_BYTES;
-      truncated = true;
+    if (total + value.length > readLimit) {
+      chunks.push(value.subarray(0, readLimit - total));
+      total = readLimit;
+      stopped = true;
       break;
     }
     chunks.push(value);
@@ -118,20 +154,23 @@ async function readCapped(res: Response): Promise<CappedBody> {
   }
   // Stop draining bytes we're about to discard rather than let the
   // connection sit reading the rest of an oversized body.
-  if (truncated) await reader.cancel().catch(() => {});
+  if (stopped) await reader.cancel().catch(() => {});
 
-  let combined = new Uint8Array(total);
+  // `stopped` means there was more body past the read limit; the margin means
+  // the read limit can sit above the cap, so an over-cap body that ended
+  // inside the margin is a truncation too.
+  const truncated = stopped || total > MAX_RESPONSE_BYTES;
+
+  const combined = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {
     combined.set(chunk, offset);
     offset += chunk.length;
   }
-  if (truncated) combined = combined.subarray(0, TRUNCATE_BUDGET_BYTES);
 
-  // Default (non-fatal) decode: a slice can land mid-character on the way
-  // in; this tolerates that with a replacement char instead of throwing.
-  let text = new TextDecoder("utf-8").decode(combined);
-  if (truncated) text += TRUNCATE_SUFFIX;
+  // Default (non-fatal) decode: the read limit can land mid-character.
+  let text = redact(new TextDecoder("utf-8").decode(combined), secrets);
+  if (truncated) text = cutToBytes(text, TRUNCATE_BUDGET_BYTES) + TRUNCATE_SUFFIX;
   return { text, truncated };
 }
 
@@ -187,17 +226,16 @@ export async function callCore(
     };
   }
 
-  const { text, truncated } = await readCapped(res);
+  // Already redacted, and redacted before the byte cut — see readCapped. Do
+  // not add a truncation step after this point without moving redaction with it.
+  const { text, truncated } = await readCapped(res, coreSecrets(cfg));
   if (res.status >= 200 && res.status < 300) {
     // ponytail: `isError: truncated` is an interim fix, not resource-link-out
     // (docs/remote-mcp.md §4.5). Truncated JSON is unparseable, and a 2xx
     // telling the model it succeeded anyway is the failure mode that section
     // argues against — so a truncated body is reported as an error even
     // though the HTTP call itself succeeded.
-    return { text: redact(text, coreSecrets(cfg)), isError: truncated };
+    return { text, isError: truncated };
   }
-  return {
-    text: redact(`HTTP ${res.status}: ${text}`, coreSecrets(cfg)),
-    isError: true,
-  };
+  return { text: `HTTP ${res.status}: ${text}`, isError: true };
 }

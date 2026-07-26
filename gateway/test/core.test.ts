@@ -188,4 +188,35 @@ describe("callCore", () => {
     expect(r.text).not.toContain("cfsecret");
     expect(r.text).not.toContain("apikey");
   });
+
+  // R1: redaction used to run AFTER readCapped's byte cut. A credential
+  // straddling that cut was sliced in half, and redact() — which matches whole
+  // strings — had nothing left to match, so the leading fragment reached the
+  // model verbatim on an ordinary 200. Sweeping the cut one byte at a time is
+  // the whole point of this test: any single-position version passes by luck,
+  // because most positions leak and a few (a fragment under redact()'s 4-char
+  // floor, or the cut landing past the secret entirely) do not.
+  it("redacts a credential straddling the truncation cut at every offset (R1)", async () => {
+    const secret = "GOCSPX-abcdefghijklmnopqrstuvwxyz";
+    const cfg: CoreConfig = { ...CFG, cfAccessClientSecret: secret };
+    // Where core.ts cuts: the cap, less the truncation suffix and the
+    // worst-case UTF-8 replacement slack (TRUNCATE_BUDGET_BYTES).
+    const CUT = CAP_BYTES - "\n...[truncated]".length - 2;
+    const REDACTED = "[redacted]";
+
+    for (let i = 0; i <= secret.length; i++) {
+      // Place the secret so the cut falls exactly i bytes into it.
+      const body = "x".repeat(CUT - i) + secret + "y".repeat(CAP_BYTES);
+      const { impl } = fakeFetch(200, body);
+      const r = await callCore(impl, cfg, "verbs.list", {}, {});
+
+      expect(r.isError).toBe(true); // i.e. this response really was truncated
+      // Only a *leading* fragment can survive the cut, so every fragment
+      // redact() would have matched (>= 4 chars) starts with these four.
+      expect(r.text.includes(secret.slice(0, 4))).toBe(false);
+      // Not vacuous: once the cut is past where "[redacted]" ends, the
+      // replacement itself has to be visible in the output.
+      if (i >= REDACTED.length) expect(r.text).toContain(REDACTED);
+    }
+  });
 });
