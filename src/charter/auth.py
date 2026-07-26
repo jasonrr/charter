@@ -22,7 +22,6 @@ from google.cloud import secretmanager
 from charter.settings import get_settings
 from charter.actor_auth import actor_email
 from charter.grants import grants_for
-from charter.errors import VerbError
 
 TTL_SECONDS = 60
 
@@ -130,20 +129,26 @@ def allowed(caller, verb):
 
 
 def identify_by_actor(request):
-    """Caller record derived from a verified actor identity (the OAuth path).
+    """(caller, verified email) from an actor identity — the OAuth path.
 
-    Returns None when there is no actor token, the token is invalid, or the
-    email holds no grant — so the dispatcher falls through to 401. This runs
-    ONLY when identify() found no API key, so the X-API-Key path is unaffected.
+    Three outcomes, all distinguishable by the dispatcher, because they are not
+    the same event to an auditor:
+      (record, email) — verified email holding a grant
+      (None, email)   — verified email with NO grant: still a known human, so
+                        the dispatcher audits the attempt before its 401
+      (None, None)    — no actor token at all: nothing to attribute
+    A present-but-invalid token raises VerbError(401, "actor_invalid") through
+    (forged, replayed, expired, wrong-aud), so the keyless path logs and
+    answers exactly as the key path does instead of going silent.
+
+    This runs ONLY when identify() found no API key; the X-API-Key path is
+    unaffected.
     """
-    try:
-        email = actor_email(request)
-    except VerbError:
-        return None                      # present-but-bad token -> no caller
+    email = actor_email(request)         # None when absent; raises when bad
     if not email:
-        return None
+        return None, None
     allow = grants_for(email)
     if allow is None:                    # fail-closed: no grant
-        return None
+        return None, email
     return {"name": email, "interface": "oauth", "allow": allow,
-            "require_actor": False}
+            "require_actor": False}, email

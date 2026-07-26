@@ -3,7 +3,8 @@
 A charter grants powers to named parties. This secret is that map: which verbs
 each verified person may call. The interactive OAuth path derives a caller's
 allow-list from it. Fail-closed — an email with no grant can sign in but gets no
-scope (401).
+scope (401). That refusal is audited under the verified email (`result =
+no_grant`), so probing by a still-valid-but-ungranted account leaves a trail.
 
 ## Create it
 

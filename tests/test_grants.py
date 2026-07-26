@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 import charter.grants as grants
 from charter import settings as settings_mod
 
@@ -62,27 +64,34 @@ class _Req:
 def test_identify_by_actor_granted_email(monkeypatch):
     monkeypatch.setattr(auth, "actor_email", lambda req: "jason@example.com")
     monkeypatch.setattr(auth, "grants_for", lambda email: ["data.*"])
-    rec = auth.identify_by_actor(_Req({"X-Actor-Token": "t"}))
+    rec, email = auth.identify_by_actor(_Req({"X-Actor-Token": "t"}))
     assert rec == {"name": "jason@example.com", "interface": "oauth",
                    "allow": ["data.*"], "require_actor": False}
+    assert email == "jason@example.com"
 
 
 def test_identify_by_actor_no_token(monkeypatch):
     monkeypatch.setattr(auth, "actor_email", lambda req: None)
-    assert auth.identify_by_actor(_Req({})) is None
+    assert auth.identify_by_actor(_Req({})) == (None, None)
 
 
-def test_identify_by_actor_invalid_token(monkeypatch):
+def test_identify_by_actor_invalid_token_raises(monkeypatch):
+    # The reason must survive: swallowing it into None is what left forged,
+    # replayed and expired tokens unaudited on the keyless path.
     def bad(req):
         raise VerbError(401, "actor_invalid", "rejected")
     monkeypatch.setattr(auth, "actor_email", bad)
-    assert auth.identify_by_actor(_Req({"X-Actor-Token": "bad"})) is None
+    with pytest.raises(VerbError) as e:
+        auth.identify_by_actor(_Req({"X-Actor-Token": "bad"}))
+    assert e.value.code == "actor_invalid"
 
 
-def test_identify_by_actor_no_grant(monkeypatch):
+def test_identify_by_actor_no_grant_keeps_the_verified_email(monkeypatch):
+    # No caller, but the email is verified -- the dispatcher audits it.
     monkeypatch.setattr(auth, "actor_email", lambda req: "nobody@example.com")
     monkeypatch.setattr(auth, "grants_for", lambda email: None)
-    assert auth.identify_by_actor(_Req({"X-Actor-Token": "t"})) is None
+    assert auth.identify_by_actor(_Req({"X-Actor-Token": "t"})) == (
+        None, "nobody@example.com")
 
 
 # --- malformed-secret guards: fail closed, never raise ------------------------
