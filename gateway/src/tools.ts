@@ -45,8 +45,8 @@ export const TOOL_CALL_DESCRIPTION =
   "callable and shows only your verbs). On failure the result is the string " +
   "'HTTP <status>: {...\"error\":\"<code>\"...}' — match on the <code> " +
   "(e.g. denied = your account lacks scope for that verb; confirm_required = " +
-  "pass confirm:true for irreversible verbs; hs_identity_required = your HubSpot " +
-  "account isn't connected). Large inputs go by reference: pass an id or URI the " +
+  "pass confirm:true for irreversible verbs). Large inputs go by reference: " +
+  "pass an id or URI the " +
   "verb dereferences, never a large inline body.";
 
 /**

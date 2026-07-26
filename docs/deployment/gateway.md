@@ -62,18 +62,32 @@ Set the non-secret values in `wrangler.jsonc` → `vars`:
 - `CHARTER_ALLOWED_DOMAIN` — e.g. `@yourdomain.com`, matching core's setting
 - `GOOGLE_CLIENT_ID` — from step 1
 
-Then the two secrets, which are never written to a file:
+Then the three secrets, which are never written to a file:
 
     npx wrangler secret put CHARTER_CREDENTIAL      # cf-id:cf-secret:api-key
     npx wrangler secret put GOOGLE_CLIENT_SECRET
+    npx wrangler secret put OAUTH_STATE_SECRET      # e.g. openssl rand -base64 32
 
 The credential is the same composite form the proxy used. Mint its API key with
 `charter keys mint` and give it the allow-list the *gateway* needs — it is the
 gateway's own credential, not a human's. Human scope comes from grants
-(`docs/deployment/grants.md`), which core applies to the actor token. If
-either secret is left unset, the gateway fails legibly rather than throwing —
-requests get a clean 401/error result instead of a raw exception surfaced to
-the model.
+(`docs/deployment/grants.md`), which core applies to the actor token.
+
+`OAUTH_STATE_SECRET` is the HMAC key that signs the sign-in `state` and binds it
+to the browser that started the flow. It is what stops an attacker from having a
+victim's Google identity delivered into a grant the attacker holds — see
+"Sign-in is bound to one browser" below. Any high-entropy string works; it is
+never sent anywhere, so rotating it costs only the sign-ins currently in flight.
+
+**Nothing here may be left unset.** If any of `GOOGLE_CLIENT_ID`,
+`GOOGLE_CLIENT_SECRET`, `OAUTH_STATE_SECRET` or `CHARTER_ALLOWED_DOMAIN` is
+missing, `/authorize` and `/callback` return `503` naming exactly which ones,
+rather than failing somewhere further away — an empty `GOOGLE_CLIENT_ID` used to
+surface as Google's own "Could not determine client ID from request" in the
+user's browser. There is deliberately **no** unsigned-state fallback: without
+`OAUTH_STATE_SECRET` the sign-in routes do not run at all. An unset
+`CHARTER_CREDENTIAL` still fails at core as a clean `401` rather than a raw
+exception surfaced to the model.
 
     npx wrangler deploy
 
@@ -102,17 +116,27 @@ Expect `authorization_endpoint`, `token_endpoint`, and
 **Security checks** — confirm these before treating a deploy as done, not just
 the happy path:
 
-- `code_challenge_methods_supported` (above) includes `"S256"` — PKCE is on.
+- `code_challenge_methods_supported` (above) includes `"S256"` — meaning S256
+  is *offered*. It does not mean PKCE is required: the OAuth library treats
+  PKCE as optional and advertises `"plain"` alongside `"S256"`, with no option
+  to withdraw either. See "PKCE is offered, not required" below.
 - Unauthenticated `POST /mcp` returns `401`.
-- A forged `state` on `/callback` (invalid JSON, or a well-formed-but-forged
-  `clientId`/`redirectUri`) returns `400`. This check is the only thing
-  standing between a forged `state` and an open redirect in the authorization
-  server, and it has no regression test anywhere — verify it by hand on every
-  deploy that touches `index.ts`'s `/callback` handler:
+- A forged `state` on `/callback` returns `400`. The state is HMAC-signed and
+  bound to a browser cookie (`gateway/src/state.ts`, unit-tested), so this is
+  belt-and-braces rather than the only line of defence — but verify it on every
+  deploy that touches `/callback`:
 
       curl -s -o /dev/null -w '%{http_code}\n' \
         "https://<your-gateway-host>/callback?state=not-json&code=x"
       # expect 400
+
+  A `state` that is validly signed but arrives without its cookie must also
+  fail, which is the check that actually matters:
+
+      # drive /authorize, keep the redirect URL, then replay it with no cookie jar
+      curl -s -o /dev/null -w '%{http_code}\n' \
+        "https://<your-gateway-host>/callback?code=x&state=<signed-state>"
+      # expect 400 — "state did not come from this browser"
 
 - An authenticated `tools/list` shows `charter_read` with `readOnlyHint: true`.
 
@@ -141,18 +165,58 @@ here.
   because the re-mint result is discarded, a rotation ends the session at
   "sign in again" with no in-place recovery. The fix is
   `OAuthProvider`'s `tokenExchangeCallback`, which writes props back after a
-  refresh; see the `ponytail:` note in `buildServer`'s `run` closure in
+  refresh; see the `ponytail:` note in `apiHandler`'s `fetch` in
   `gateway/src/index.ts`, just above the `freshIdToken` call ("freshIdToken
-  returns a rotated identity and we discard it...").
-- **The OAuth `state` is unsigned and not bound to a browser session.** An
-  attacker who observes a victim's in-flight `state` (e.g. from a shared
-  clipboard, a logged URL, or a browser history sync) can replay it with
-  their own Google sign-in — the victim's agent then acts as the *attacker's*
-  charter identity. This is a privilege downgrade and confused-deputy, not a
-  privilege escalation: core still authorizes strictly on the ID token's
-  identity, so the attacker only gets the access their own account already
-  has. It's still worth knowing about. The complete fix is an HMAC-signed
-  `state` bound to a cookie set in the browser that started the flow.
+  returns a rotated identity and we discard it..."). When a refresh does fail,
+  the gateway now answers `401` with a `WWW-Authenticate` header so the client
+  re-runs OAuth on its own, instead of the session silently going dead.
+
+- **PKCE is offered, not required.** OAuth 2.1 and the MCP spec want S256, but
+  `@cloudflare/workers-oauth-provider` hard-codes
+  `code_challenge_methods_supported: ["plain", "S256"]`, defaults a request with
+  no `code_challenge_method` to `plain`, and treats PKCE as optional
+  altogether — with no configuration hook for any of it. The gateway could
+  refuse non-S256 requests in its own `/authorize`, but the metadata document
+  would still advertise `plain`, so clients would be told one thing and handed
+  another. Left as-is deliberately rather than fought. Real MCP clients send
+  S256.
+- **Sign-in is bound to one browser — and an earlier version of this document
+  was wrong about why that matters.** It described the unsigned `state` as "a
+  privilege downgrade and confused-deputy, not a privilege escalation… the
+  attacker only gets the access their own account already has." **That was
+  false, and an operator could have accepted the risk on the strength of it.**
+
+  The escalating direction was open. Because client registration is public and
+  accepts any `redirect_uris`, an attacker could register a client pointing at
+  their own server, call `/authorize` to mint a `state`, and phish a victim into
+  completing a *genuine* Google consent for the *genuine* charter app. The
+  callback would bind the **victim's** identity to the **attacker's** grant and
+  hand the attacker an authorization code. Redeeming it gave the attacker an MCP
+  token whose every tool call carried the victim's Google ID token — so core
+  correctly verified a real token, applied the victim's grants, and audited the
+  calls as the victim. That is full account takeover, not a downgrade. PKCE did
+  not help (the attacker was the legitimate client of their own flow and held
+  both halves), and neither did the redirect-URI check (the redirect URI was
+  genuinely registered).
+
+  **Fixed.** The `state` is now HMAC-signed with `OAUTH_STATE_SECRET` *and*
+  carries a random nonce mirrored in a `__Host-` prefixed, `HttpOnly`, `Secure`,
+  `SameSite=Lax` cookie with a 10-minute TTL. `/callback` requires both a valid
+  signature and a matching cookie. Signing alone would not have been enough —
+  an attacker can always ask us to sign a state of their own; the cookie is the
+  half they cannot plant in someone else's browser. Logic and edge cases live in
+  `gateway/src/state.ts` with unit tests (`gateway/test/state.test.ts`).
+
+  **Residual, smaller but real.** The cookie binds the callback to whichever
+  browser began the flow, so it closes the chain above — where the victim clicks
+  a link to *Google*. It does not close the variant where the victim is phished
+  into clicking a link to the gateway's own `/authorize` carrying the attacker's
+  `client_id` and `redirect_uri`: that browser legitimately receives both the
+  cookie and the state, and the code is then delivered to the attacker's
+  registered address. Closing that needs a consent screen naming the client
+  before the flow starts, or an end to open dynamic client registration. Neither
+  is built. Until one is, treat "a charter sign-in link someone sent you" the
+  same way you would treat any other unexpected OAuth prompt.
 - **Five moderate `npm audit` advisories are knowingly deferred**, all one
   root cause: a Windows path-traversal issue in `@hono/node-server` (used only
   by the MCP SDK's optional Node transport), reached transitively by

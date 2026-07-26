@@ -12,7 +12,7 @@
  * @cloudflare/workers-oauth-provider persists (encrypted) in KV.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { createMcpHandler, getMcpAuthContext } from "agents/mcp";
+import { createMcpHandler } from "agents/mcp";
 import OAuthProvider, {
   type AuthRequest,
   type OAuthHelpers,
@@ -37,6 +37,16 @@ import {
   TOOL_READ_DESCRIPTION,
   TOOL_READ_NAME,
 } from "./tools.js";
+import {
+  clearStateCookie,
+  importStateKey,
+  mintNonce,
+  openState,
+  readCookie,
+  sealState,
+  setStateCookie,
+  STATE_COOKIE,
+} from "./state.js";
 
 export type Env = {
   OAUTH_KV: KVNamespace;
@@ -47,9 +57,31 @@ export type Env = {
   CHARTER_CREDENTIAL: string;
   /** wrangler secret put GOOGLE_CLIENT_SECRET */
   GOOGLE_CLIENT_SECRET: string;
+  /** wrangler secret put OAUTH_STATE_SECRET — HMAC key for the sign-in state (state.ts). */
+  OAUTH_STATE_SECRET: string;
   /** Not a wrangler binding — OAuthProvider injects this before calling a handler. */
   OAUTH_PROVIDER: OAuthHelpers;
 };
+
+/**
+ * Config the sign-in routes cannot run without.
+ *
+ * Every one of these is `string` on `Env` but `undefined` at runtime when it is
+ * unset, and each fails somewhere unhelpful and far away — an empty
+ * GOOGLE_CLIENT_ID reaches the user as Google's own "Could not determine client
+ * ID from request", and a missing OAUTH_STATE_SECRET would otherwise be a
+ * silent downgrade to unsigned state. Name them at the door instead.
+ */
+function missingConfig(env: Env): string[] {
+  return (
+    [
+      "GOOGLE_CLIENT_ID",
+      "GOOGLE_CLIENT_SECRET",
+      "OAUTH_STATE_SECRET",
+      "CHARTER_ALLOWED_DOMAIN",
+    ] as const
+  ).filter((name) => !env[name]);
+}
 
 /** What we persist per grant. @cloudflare/workers-oauth-provider encrypts this at rest. */
 type Props = { identity: GoogleIdentity };
@@ -90,46 +122,21 @@ function coreConfig(env: Env): CoreConfig {
 // --- the MCP API handler -----------------------------------------------------
 
 /**
- * `gatewayUrl` is threaded in rather than read from a global so that every
- * Google call on every path derives its redirect URI from the same place: the
- * request this Worker is answering.
+ * The actor token is resolved once per request by the caller and handed in,
+ * rather than re-derived per tool call. A dead Google refresh token has to
+ * become a 401 so the client re-runs OAuth, and a tool handler cannot produce
+ * one — by the time it runs, the MCP layer has already committed to a 200
+ * JSON-RPC envelope. Resolving it at the request boundary is what makes that
+ * status code reachable.
  */
-function buildServer(env: Env, gatewayUrl: string): McpServer {
+function buildServer(env: Env, actorToken: string): McpServer {
   // A fresh server per request: the SDK (>=1.26.0) refuses to reconnect one.
   const server = new McpServer({ name: "charter", version: "0.1.0" });
 
-  const run = async (
+  const run = (
     toolName: string,
     args: { verb: string; args?: Record<string, unknown> },
-  ) => {
-    const auth = getMcpAuthContext();
-    const props = auth?.props as Props | undefined;
-    if (!props?.identity) {
-      return {
-        content: [{ type: "text" as const, text: "not signed in to charter" }],
-        isError: true,
-      };
-    }
-    // Re-mint the Google ID token if it is at or near expiry (§4.6). The
-    // refresh_token grant sends no redirect_uri, so this path never uses the
-    // one in the config — it just must not carry a wrong one.
-    // ponytail: freshIdToken returns a rotated identity and we discard it, which
-    // costs two things. The cheap one: past the one-hour mark every tool call
-    // pays a Google round-trip, because nothing remembers the newer token. The
-    // sharp one: google.ts deliberately adopts a rotated refresh_token, and
-    // dropping it means that if Google ever rotates ours, the stored one is dead
-    // and the session ends at "sign in again" with no way to recover in place.
-    // Google rarely rotates for web clients, which is the only reason this is a
-    // note and not a fix. Writing the identity back needs OAuthProvider's
-    // tokenExchangeCallback.
-    const { idToken } = await freshIdToken(
-      fetch,
-      googleConfig(env, gatewayUrl),
-      props.identity,
-      Math.floor(Date.now() / 1000),
-    );
-    return handleTool(fetch, coreConfig(env), toolName, args, idToken);
-  };
+  ) => handleTool(fetch, coreConfig(env), toolName, args, actorToken);
 
   // Read is registered first, as the proxy's own check expects.
   server.registerTool(
@@ -153,11 +160,65 @@ function buildServer(env: Env, gatewayUrl: string): McpServer {
   return server;
 }
 
+/**
+ * Tell the client its charter session is over so it re-runs OAuth.
+ *
+ * Without this the gateway's own MCP token stays valid while the Google
+ * identity behind it is dead, so the client sees only tool-result text, never a
+ * 401, and never re-authorizes — the session is stuck until a human reconnects
+ * by hand. The description is a fixed string: upstream Google text has no place
+ * in a header, and there is nothing here a client can act on beyond "sign in
+ * again".
+ */
+function unauthorized(): Response {
+  return new Response("charter sign-in expired; re-authorize", {
+    status: 401,
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "WWW-Authenticate":
+        'Bearer error="invalid_token", ' +
+        'error_description="charter sign-in expired; re-authorize"',
+    },
+  });
+}
+
+/** OAuthProvider attaches the decrypted grant props here before routing to us. */
+type PropsContext = ExecutionContext & { props?: unknown };
+
 const apiHandler = {
-  fetch(request: Request, env: Env, ctx: ExecutionContext) {
-    // createMcpHandler reads the grant's props off ctx, which OAuthProvider
-    // decrypted and attached before routing here.
-    return createMcpHandler(buildServer(env, request.url), { route: "/mcp" })(
+  async fetch(request: Request, env: Env, ctx: ExecutionContext) {
+    const props = (ctx as PropsContext).props as Props | undefined;
+    if (!props?.identity) return unauthorized();
+
+    // Re-mint the Google ID token if it is at or near expiry (§4.6), here at
+    // the request boundary rather than inside a tool, so a dead refresh token
+    // can still become a 401 (see buildServer). freshIdToken is a no-op with no
+    // network call until the token is actually near expiry.
+    //
+    // ponytail: freshIdToken returns a rotated identity and we discard it, which
+    // costs two things. The cheap one: past the one-hour mark every request pays
+    // a Google round-trip, because nothing remembers the newer token. The sharp
+    // one: google.ts deliberately adopts a rotated refresh_token, and dropping
+    // it means that if Google ever rotates ours, the stored one is dead and the
+    // session ends at "sign in again" with no way to recover in place. Google
+    // rarely rotates for web clients, which is the only reason this is a note
+    // and not a fix. Writing the identity back needs OAuthProvider's
+    // tokenExchangeCallback.
+    let actorToken: string;
+    try {
+      ({ idToken: actorToken } = await freshIdToken(
+        fetch,
+        googleConfig(env, request.url),
+        props.identity,
+        Math.floor(Date.now() / 1000),
+      ));
+    } catch {
+      // Cause deliberately dropped: google.ts's message is for a human reading a
+      // browser, not for a header, and the client's only move is to re-authorize.
+      return unauthorized();
+    }
+
+    return createMcpHandler(buildServer(env, actorToken), { route: "/mcp" })(
       request,
       env,
       ctx,
@@ -184,16 +245,37 @@ function browserError(message: string, status: number): Response {
 const authHandler = {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    const isAuthRoute =
+      url.pathname === "/authorize" || url.pathname === "/callback";
+
+    // Fail closed and fail named. In particular there is no unsigned-state
+    // fallback: without OAUTH_STATE_SECRET the sign-in routes do not run.
+    const missing = isAuthRoute ? missingConfig(env) : [];
+    if (missing.length > 0) {
+      return browserError(
+        "charter-gateway is not fully configured; sign-in is disabled.\n\n" +
+          `Unset: ${missing.join(", ")}\n\n` +
+          "See docs/deployment/gateway.md — vars go in wrangler.jsonc, " +
+          "secrets are set with `wrangler secret put`.",
+        503,
+      );
+    }
 
     if (url.pathname === "/authorize") {
       let state: string;
+      let nonce: string;
       try {
         // @cloudflare/workers-oauth-provider parses and redirect-URI-checks the
-        // client's request; carry it as state so /callback can complete the
-        // grant it belongs to. Plain JSON, not base64 — URLSearchParams already
-        // escapes it, and btoa would throw on any non-Latin-1 character a client
-        // puts in its own `state`.
-        state = JSON.stringify(await env.OAUTH_PROVIDER.parseAuthRequest(request));
+        // client's request. We sign it and bind it to this browser before
+        // handing it to Google — see state.ts for why both halves are needed.
+        const authRequest = await env.OAUTH_PROVIDER.parseAuthRequest(request);
+        nonce = mintNonce();
+        state = await sealState(
+          await importStateKey(env.OAUTH_STATE_SECRET),
+          authRequest,
+          nonce,
+          Math.floor(Date.now() / 1000),
+        );
       } catch (e) {
         // parseAuthRequest throws on an unregistered redirect URI, which is the
         // first thing an operator gets wrong. An unhandled throw here is a bare
@@ -208,26 +290,28 @@ const authHandler = {
           400,
         );
       }
-      return Response.redirect(
-        buildAuthorizeUrl(googleConfig(env, request.url), state),
-        302,
-      );
+      // Response.redirect() cannot carry Set-Cookie, and the cookie is the
+      // half of the CSRF defence a signature cannot provide.
+      return new Response(null, {
+        status: 302,
+        headers: {
+          Location: buildAuthorizeUrl(googleConfig(env, request.url), state),
+          "Set-Cookie": setStateCookie(nonce),
+        },
+      });
     }
 
     if (url.pathname === "/callback") {
-      // Everything on this path is caller-supplied, so validate the state
+      // Everything on this path is caller-supplied, so authenticate the state
       // before spending a Google round-trip on it.
-      let oauthReq: AuthRequest;
-      try {
-        const parsed: unknown = JSON.parse(url.searchParams.get("state") ?? "");
-        // `null` — and any other non-object — parses without throwing, so reject
-        // it here. Otherwise reading .clientId below is an uncaught 500, the
-        // same defect this guard exists to close.
-        if (!parsed || typeof parsed !== "object") throw new Error("not an object");
-        oauthReq = parsed as AuthRequest;
-      } catch {
-        return browserError("invalid state", 400);
-      }
+      const opened = await openState(
+        await importStateKey(env.OAUTH_STATE_SECRET),
+        url.searchParams.get("state") ?? "",
+        readCookie(request.headers.get("Cookie"), STATE_COOKIE),
+        Math.floor(Date.now() / 1000),
+      );
+      if (!opened.ok) return browserError(opened.reason, 400);
+      const oauthReq = opened.authRequest as AuthRequest;
 
       // parseAuthRequest already checked this redirect URI against the client's
       // registered set — but at /authorize, and the check does not survive the
@@ -278,7 +362,12 @@ const authHandler = {
           400,
         );
       }
-      return Response.redirect(redirectTo, 302);
+      // Clear the nonce on the way out: the flow is over, and a spent cookie
+      // should not be able to authenticate a second state.
+      return new Response(null, {
+        status: 302,
+        headers: { Location: redirectTo, "Set-Cookie": clearStateCookie() },
+      });
     }
 
     return new Response("charter-gateway", { status: 200 });

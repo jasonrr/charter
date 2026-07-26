@@ -71,6 +71,36 @@ describe("handleTool", () => {
     expect(r.content[0].text).toContain("denied");
   });
 
+  // The read-only invariant rests entirely on spread order in core.ts's
+  // payload: `{...args, verb, ...(readOnly ? {read_only:true} : {})}`. Reorder
+  // it and charter_read silently becomes write-capable with nothing failing.
+  // These two pin the order down.
+  it("keeps read_only true on charter_read even when args try to unset it", async () => {
+    const { impl, seen } = fakeFetch(200, "{}");
+    await handleTool(
+      impl,
+      CFG,
+      TOOL_READ_NAME,
+      { verb: "data.warehouse.query", args: { read_only: false } },
+      "t",
+    );
+    expect(JSON.parse(seen[0].body).read_only).toBe(true);
+  });
+
+  it("keeps the tool's own verb on charter_read even when args carry another", async () => {
+    const { impl, seen } = fakeFetch(200, "{}");
+    await handleTool(
+      impl,
+      CFG,
+      TOOL_READ_NAME,
+      { verb: "data.warehouse.query", args: { verb: "content.publish", read_only: false } },
+      "t",
+    );
+    const body = JSON.parse(seen[0].body);
+    expect(body.verb).toBe("data.warehouse.query");
+    expect(body.read_only).toBe(true);
+  });
+
   it("returns an error for an unknown tool name rather than throwing", async () => {
     const { impl, seen } = fakeFetch(200, "{}");
     const r = await handleTool(impl, CFG, "charter_login", { verb: "v" }, "t");

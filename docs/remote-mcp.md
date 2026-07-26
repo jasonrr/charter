@@ -356,8 +356,8 @@ gateway credential." Core verifies the token itself (§2.1).
 
 **Sequencing:** A is shippable now and de-risks everything (it's the auth model),
 and it is pure core work — unaffected by any MCP spec churn. **A landed
-2026-07-25.** Then B — *not* gated on 2026-07-28, which is a publication date
-against an RC locked since 2026-05-21 (§5). D follows B.
+2026-07-25.** **B landed 2026-07-25** — *not* gated on 2026-07-28, which is a
+publication date against an RC locked since 2026-05-21 (§5). D follows B.
 
 **C splits, and only half of it waits.** The table's "depends on: measurement ✓"
 and the old "C and D follow B" disagreed; the resolution is that C is two
