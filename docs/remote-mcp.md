@@ -65,7 +65,7 @@ boundary instead of a deployment detail.
 | **Tracks** | the MCP spec | charter semantics |
 | **Language/runtime** | TS on Workers (reference impl) | Python, GCP |
 | **Owns** | transport, OAuth, MCP↔verb translation, discovery caching | verbs, packs, SDK, packtest |
-| **Holds** | the core credential + CF-Access service token | keys, grants policy, audit table |
+| **Holds** | core's CF-Access service token (and no API key — §4.1) | keys, grants policy, audit table |
 | **Decides** | nothing governed | authorization, fail-closed |
 | **Writes audit** | never | always |
 | **Verifies identity token** | no (forwards it) | **yes** |
@@ -96,15 +96,17 @@ Charter already says `engine`, `bridge`, `proxy`. To keep those from colliding:
      │ stdio                                 │ Streamable HTTP + OAuth 2.1
   charter_mcp.js  ← holds API key,        charter-gateway  ← OAuth provider
      │  CF creds, does Google OAuth          │  (federates Google), holds
-     │                                       │  the core credential
-     │ HTTPS + X-API-Key + X-Actor-Token     │ HTTPS + credential + X-Actor-Token
+     │                                       │  core's CF-Access token
+     │ HTTPS + X-API-Key + X-Actor-Token     │ HTTPS + CF-Access + X-Actor-Token
   core (Cloud Run, CF Access)             core (Cloud Run, CF Access)
                                              ▲ unchanged contract; caller now
                                                derived from identity (§4.1)
 ```
 
-The credential and CF-Access service token stop being distributed to humans.
-They live once, in the gateway. Humans hold only a Google session.
+**No `X-API-Key` on the right-hand side, and that is load-bearing** — see §4.1's
+final bullet. The API key and the CF-Access service token stop being distributed
+to humans: the service token lives once, in the gateway, and the human-facing
+gateway holds no API key at all. Humans hold only a Google session.
 
 ## 4. Locked decisions
 
@@ -133,6 +135,22 @@ is charter vocabulary because it carries meaning — see §2.5.)*
 - Both paths coexist. An API key still wins when present (headless keeps working
   and can still layer an actor on top). The require_actor gate is irrelevant on
   the OAuth path — the caller *is* the actor.
+- **Therefore the gateway sends `X-API-Key` and `X-Actor-Token` never together,
+  and on a human's call sends no key at all.** This is the implication the
+  clause above carries and the earlier text left unsaid, at the cost of the
+  whole grants feature: because the key wins, a gateway that held one would
+  authorize every signed-in human with *its* allow-list — the union of what
+  everyone needs — and `charter-grants` would never be read. The audit row would
+  name the key as the actor, with the human demoted to `on_behalf_of`. That is
+  exactly the authority §2.1 says the gateway does not have, so the exclusion is
+  structural: `gateway/src/core.ts`'s `authHeaders` sends the key only when
+  there is no actor token, and a unit test pins it. The CF-Access service token
+  is unaffected — it is a network gate (§4.4), not a claim about scope.
+- Consequence for operators, stated because it is the failure mode this
+  replaces: a signed-in human with no grant can do **nothing**, and core audits
+  the attempt as `no_grant` (`main.py`'s `bridge()`). Grants are now the only
+  source of human scope, so an empty `charter-grants` is a locked-out
+  deployment, not a permissive one.
 
 **Trust boundary (defense in depth):** CF Access = network gate (only the
 gateway, holding the service token, can reach core). Google ID token = identity
@@ -143,8 +161,9 @@ emails and verb patterns, not secrets.
 ### 4.2 The gateway is the proxy's translation, hosted
 
 It exposes an MCP server over Streamable HTTP and translates `tools/call` → POST
-`{"verb", ...args}` to core with the gateway-held credential + the caller's
-Google ID token as `X-Actor-Token`. This is `charter_mcp.js`'s
+`{"verb", ...args}` to core through the CF-Access tunnel, carrying the caller's
+Google ID token as `X-Actor-Token` and no credential of its own that asserts
+scope (§4.1). This is `charter_mcp.js`'s
 `handle()`/`callBridge()` logic minus the local file tricks, plus OAuth and the
 current transport requirements (§5).
 
@@ -155,7 +174,8 @@ context cost that motivates charter is preserved.
 
 ### 4.3 OAuth model
 
-Client-driven OAuth 2.1 (authorization code + PKCE), the MCP standard. The
+Client-driven OAuth 2.1 (authorization code + PKCE — but see §5 on how far the
+deployment actually gets with PKCE), the MCP standard. The
 gateway is an OAuth **resource server** advertising protected-resource metadata
 (RFC 9728) and an **authorization server** that **federates Google** as the
 upstream IdP (openid email) — the audience is the gateway, not Google. This is
@@ -262,6 +282,55 @@ separately once B's federation pattern is proven. Verbs that need a HubSpot
 identity return `hs_identity_required` until then, exactly as they do today for
 an unconnected user.
 
+### 4.7 Sign-in integrity (added 2026-07-26, after B shipped)
+
+Three decisions were made while building B, are load-bearing, and existed only
+in `docs/deployment/gateway.md`. A runbook is where an operator looks to *do* the
+thing; a spec is where a second implementation of the gateway (§2.2) looks to
+know what it must reproduce. These are requirements on any gateway, not
+Cloudflare details, so they belong here too.
+
+**Signed, browser-bound sign-in state.** The OAuth `state` is HMAC-signed with a
+new required secret `OAUTH_STATE_SECRET`, and carries a nonce mirrored in a
+`__Host-` prefixed, `HttpOnly`, `Secure`, `SameSite=Lax` cookie with a ~10-minute
+TTL; `/callback` requires both a valid signature and the matching cookie, and
+each concurrent sign-in gets its own cookie *name*. **There is no unsigned-state
+fallback:** with the secret unset the sign-in routes return `503` rather than
+degrading. This closes a full account takeover, not a downgrade — an attacker
+could otherwise register a client pointing at their own server, mint a `state`,
+and phish a victim through a *genuine* Google consent, binding the victim's
+identity to the attacker's grant. Signing alone is insufficient (we will sign
+anything asked of us); the cookie is the half an attacker cannot plant in
+someone else's browser. Implementation and edge cases: `gateway/src/state.ts`.
+
+**Redirect-URI registration screening.** Dynamic client registration accepts
+only loopback redirect URIs (`http://localhost`, `http://127.0.0.1`,
+`http://[::1]`, any port) or https on the gateway's own origin; unacceptable
+entries are dropped from a mixed array and a registration with nothing left is
+refused. This — not the consent screen — is the control that *prevents* the
+phishing variant, because a loopback URI resolves on the victim's own machine
+and there is nowhere for a code to be collected. **Product-visible, permanent
+consequence:** an MCP client whose redirect URI is neither loopback nor on the
+gateway cannot connect until the operator adds its origin to
+`CHARTER_EXTRA_REDIRECT_ORIGINS`, which defaults to empty. VS Code is the live
+example — its loopback flow works, its `https://vscode.dev` fallback does not.
+Widening that var re-opens the attack for anything hosted on the origin added,
+so it is a deliberate operator decision, not configuration hygiene.
+
+**Consent before forwarding to Google.** `/authorize` renders an interstitial the
+user must click through, and `/callback` requires a consent flag carried inside
+the signed state, so the screen cannot be skipped by construction. This is
+required, not preferred — the MCP spec's authorization Security Considerations:
+"MCP proxy servers using static client IDs **MUST** obtain user consent for each
+dynamically registered client before forwarding to third-party authorization
+servers." It applies to this architecture exactly: one static upstream Google
+client id, open registration, forwarding to a third-party AS. The page shows the
+redirect URI's **origin**, never `client_name` — the name is whatever the
+registrant typed and is never verified, so it is the field an attacker uses to
+look like charter. `ponytail:` Client ID Metadata Documents (a `SHOULD` in
+2026-07-28) would let consent show a *verified* name and origin; today's screen
+still asks a human to recognise one. Not implemented; tracked as follow-up.
+
 ## 5. The gateway's reference implementation
 
 **Decided: a Cloudflare Worker running a maintained MCP SDK, with OAuth from a
@@ -298,9 +367,36 @@ point release.
   publish `code_challenge_methods_supported`; RFC 9207 `iss` (SHOULD); DCR
   deprecated in favor of Client ID Metadata Documents (SHOULD).
 
+  **PKCE `S256` is a requirement we do not meet, and this bullet used to imply
+  we did.** `@cloudflare/workers-oauth-provider` hard-codes
+  `code_challenge_methods_supported: ["plain", "S256"]`, defaults a request that
+  names no method to `plain`, and treats PKCE as optional altogether, with no
+  configuration hook for any of it. The gateway could refuse non-S256 in its own
+  `/authorize`, but the metadata document would still advertise `plain` — so
+  clients would be told one thing and handed another. Accepted deliberately for
+  now (real MCP clients send S256) and recorded as a known limitation in
+  `docs/deployment/gateway.md`; the fix is scheduled separately. Recorded here
+  because a locked decision the deployment does not honour is a defect in this
+  document, not only in the deployment.
+
 None of that is charter's business logic. Hand-rolling it in Python would mean
 owning a dual-era transport rewrite against a days-old spec, on top of an OAuth
 authorization server — the exact sensitive surface we set out to avoid.
+
+**How much of that avoidance actually held: less than this section claimed.**
+The library owns the token endpoint, grant storage and encryption, the metadata
+documents, and the registration endpoint's mechanics — real, and still worth the
+choice. But B ended up hand-rolling a substantial amount of OAuth *security* on
+top of it: signed, browser-bound sign-in state (`state.ts`), the consent
+interstitial and its enforcement at `/callback`, and a redirect-URI screening
+layer that intercepts `POST /register` *before* the provider sees it
+(`redirect_uri.ts`), because the provider accepts any `redirect_uris` a caller
+sends. Every one of those closes a hole the library left open (§4.7), and each
+is charter's code to maintain and to get right. The honest version of §5's
+rationale is that a maintained library removes the *transport and protocol*
+burden, which is what moves fastest — it does not remove the authorization
+server's security burden, and this deployment is the evidence. Weigh that
+against the rejected alternatives with the real number, not the assumed one.
 
 **Rejected alternatives.** *Extend the Python core* with MCP + OAuth endpoints:
 one deployable, no new runtime, but hand-rolls the two hardest and
@@ -345,14 +441,16 @@ Broken per the writing-plans scope check; each ships and tests on its own.
 | | Sub-project | Depends on | Detailed plan |
 |---|---|---|---|
 | **A** | **Core: grants** — `identify_by_actor` + grants loader, fail-closed | nothing | **written** (`plans/2026-07-25-remote-mcp-grants.md`) |
-| **B** | **Gateway** — MCP over Streamable HTTP + OAuth federating Google; translates to core. Ships on whichever revision the SDK speaks; dual-era is automatic (§5) | A ✓, §5 ✓ | **landed** (`docs/superpowers/plans/2026-07-25-remote-mcp-gateway.md`) |
+| **B** | **Gateway** — MCP over Streamable HTTP + OAuth federating Google; translates to core. Ships on whichever revision the SDK speaks; dual-era is automatic (§5) | A ✓, §5 ✓ | **landed** — the code is `gateway/src/`; the plan (`docs/superpowers/plans/2026-07-25-remote-mcp-gateway.md`) is **superseded, do not execute** |
 | **C** | **Payload contract** — adopt reference-in / resource-link-out (§4.5); inline blog+email, podcast takes a Drive reference; document in the pack-authoring skill | measurement ✓ | scoped by §4.5 |
 | **D** | **Distribution repackage + proxy removal** — plugin becomes a remote-HTTP pointer (`{"type":"http"}`) carrying skills; **delete** `plugin/proxy/` and `desktop-extension/`; update `INSTALL.md`/`distribution.md` | B | after B works |
 
 **Seam A↔B:** core accepts a caller derived from `X-Actor-Token` + grants,
-reached only through the CF-Access-gated tunnel. The
-gateway's only contract with core is "present a valid Google ID token + the
-gateway credential." Core verifies the token itself (§2.1).
+reached only through the CF-Access-gated tunnel. The gateway's only contract
+with core is "present a valid Google ID token, through the tunnel, with no
+`X-API-Key` beside it." Core verifies the token itself and derives scope from
+grants (§2.1, §4.1) — the no-key half is what makes that sentence true rather
+than aspirational.
 
 **Sequencing:** A is shippable now and de-risks everything (it's the auth model),
 and it is pure core work — unaffected by any MCP spec churn. **A landed
@@ -384,7 +482,11 @@ adapter for *Claude clients*; a cron job doesn't need one.
 **Open, small:** if a *headless Claude agent* (e.g. Claude Code in CI) ever needs
 MCP without a human OAuth flow, the gateway should accept a bearer API key as an
 alternative to an OAuth token and forward it as `X-API-Key` — core already
-accepts both. `ponytail:` don't build it until something actually needs it.
+accepts both. That is the *only* call on which the gateway may send a key, and
+it is by definition a call with no actor token, so it stays inside §4.1's
+exclusion rather than reopening it. `core.ts`'s `CoreConfig` already carries an
+optional `apiKey` for it; nothing sets it. `ponytail:` don't build it until
+something actually needs it.
 
 ### 7.2 Non-goals
 - **No cross-tenant.** Single operator, single org (see `distribution.md`).

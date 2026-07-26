@@ -1,6 +1,37 @@
 # Charter Gateway (sub-project B) Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> # ⛔ SUPERSEDED — DO NOT EXECUTE
+>
+> **Sub-project B landed on 2026-07-25. This plan is kept as the record of how it
+> was scoped, not as instructions. Do not run it, and do not treat its code
+> blocks as current.** The shipped gateway is the source of truth:
+> `gateway/src/` (with `gateway/test/`), `docs/deployment/gateway.md` for
+> operating it, and `docs/remote-mcp.md` for the design it satisfies.
+>
+> **Executing it would rebuild a closed account-takeover hole.** Task 4's
+> `/authorize` here carries the OAuth request as `btoa(JSON.stringify(oauthReq))`
+> — unsigned, unbound state. That allowed an attacker to phish a victim through a
+> genuine Google consent and have the victim's identity bound to the attacker's
+> grant: full account takeover. What shipped instead is HMAC-signed state bound to
+> a browser cookie (`gateway/src/state.ts`), redirect-URI screening at
+> registration (`gateway/src/redirect_uri.ts`), and a required consent
+> interstitial. See `docs/remote-mcp.md` §4.7 and the "Sign-in is bound to one
+> browser" section of `docs/deployment/gateway.md`.
+>
+> Three further things this plan says are no longer true: the module list is four
+> files (shipped: seven, adding `state.ts`, `redirect_uri.ts`, `html.ts`); the
+> gateway's credential to core is a packed `CHARTER_CREDENTIAL` (shipped: separate
+> `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET`, and **no API key** — see
+> `docs/remote-mcp.md` §4.1); and `core.ts` exports `credHeaders` (shipped:
+> `authHeaders`, which sends a key only when there is no actor token).
+>
+> Rewriting the plan to match was considered and rejected: it is a 1400-line
+> executable artifact whose only remaining value is historical, and a plan that
+> tracks shipped code is a second copy of that code to keep honest.
+
+> **For agentic workers:** this plan is superseded — see the banner above. Do not
+> execute it. If you were sent here to implement the gateway, read `gateway/src/`
+> instead and stop.
 
 **Goal:** Ship `charter-gateway` — a Cloudflare Worker that serves charter as a remote MCP server over Streamable HTTP, authenticates humans with OAuth federating Google, and translates `tools/call` into charter-core's `{"verb", ...args}` HTTP contract.
 
@@ -1184,8 +1215,10 @@ const authHandler = {
     const url = new URL(request.url);
 
     if (url.pathname === "/authorize") {
-      // @cloudflare/workers-oauth-provider parsed the client's request; carry it as state so
-      // /callback can complete the grant it belongs to.
+      // ⛔ DO NOT COPY THIS. Unsigned, unbound state — this is the account-takeover
+      // hole named in the banner at the top of this file. The shipped version signs
+      // the state and binds it to a browser cookie, and requires consent before
+      // forwarding to Google: see gateway/src/state.ts and gateway/src/index.ts.
       const oauthReq = await (env as any).OAUTH_PROVIDER.parseAuthRequest(request);
       const state = btoa(JSON.stringify(oauthReq));
       return Response.redirect(buildAuthorizeUrl(googleConfig(env, request.url), state), 302);
