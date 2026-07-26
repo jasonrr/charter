@@ -115,9 +115,12 @@ def bridge(request):
         # not revoke a human's grant -- revoke that in charter-grants.
         try:
             caller, email = identify_by_actor(request)   # verified actor + grants
-        except VerbError as e:                 # present-but-bad token: audit it here,
-            record(None, verb, target, e.code, rid=rid, detail=e.detail)   # as the key
-            return _json({"ok": False, "verb": verb, "error": e.code,      # path does
+        except VerbError as e:
+            # Present-but-bad token: audited and answered here exactly as the
+            # key path answers it below, so a forged or expired token is not
+            # quieter just because it arrived without a key.
+            record(None, verb, target, e.code, rid=rid, detail=e.detail)
+            return _json({"ok": False, "verb": verb, "error": e.code,
                           "detail": e.detail, "request_id": rid}, e.status)
         if caller is None and email:
             # Verified human, no grant. The identity is known and the probe is
