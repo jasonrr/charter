@@ -29,6 +29,7 @@ dependencies = [
     "google-auth>=2.6.0",
     "pydantic-settings>=2.0",
     "requests>=2.31.0",
+    "google-cloud-storage>=2.10.0",
 ]
 
 [project.optional-dependencies]

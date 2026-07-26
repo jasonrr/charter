@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     grants_secret_name: str = "charter-grants"
     google_refresh_secret_name: str = "charter-google-refresh"
     audit_table: str = "charter.audit"  # dataset.table, joined with gcp_project
+    # §4.5 payload offload: GCS bucket for oversized success envelopes. Empty
+    # disables offload (results stay inline; the gateway truncates at 1 MB).
+    results_bucket: str = ""
+    # Success-envelope size above which bridge() offloads (bytes of UTF-8 JSON).
+    max_inline_bytes: int = 262144
     # NoDecode: accept CSV from env ("a,b") instead of pydantic's JSON decoding.
     warehouse_datasets: Annotated[tuple[str, ...], NoDecode] = ()
     # Shipped reference packs' config — declared so env binds (pydantic-settings
