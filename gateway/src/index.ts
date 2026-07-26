@@ -102,10 +102,15 @@ function buildServer(env: Env, gatewayUrl: string): McpServer {
     // Re-mint the Google ID token if it is at or near expiry (§4.6). The
     // refresh_token grant sends no redirect_uri, so this path never uses the
     // one in the config — it just must not carry a wrong one.
-    // ponytail: the re-minted identity is not written back to the grant, so a
-    // session past the one-hour mark pays a Google round-trip per tool call.
-    // Persisting it needs OAuthProvider's tokenExchangeCallback; not worth the
-    // moving parts until the extra hop shows up as a problem.
+    // ponytail: freshIdToken returns a rotated identity and we discard it, which
+    // costs two things. The cheap one: past the one-hour mark every tool call
+    // pays a Google round-trip, because nothing remembers the newer token. The
+    // sharp one: google.ts deliberately adopts a rotated refresh_token, and
+    // dropping it means that if Google ever rotates ours, the stored one is dead
+    // and the session ends at "sign in again" with no way to recover in place.
+    // Google rarely rotates for web clients, which is the only reason this is a
+    // note and not a fix. Writing the identity back needs OAuthProvider's
+    // tokenExchangeCallback.
     const { idToken } = await freshIdToken(
       fetch,
       googleConfig(env, gatewayUrl),
@@ -151,18 +156,47 @@ const apiHandler = {
 
 // --- the sign-in handler (Google federation) ---------------------------------
 
+/**
+ * An error bound for a human's browser.
+ *
+ * Always text/plain, never HTML: these routes render caller-influenced strings
+ * in a browser, and a plain-text content type keeps that from ever being a
+ * script sink no matter what a future upstream message contains.
+ */
+function browserError(message: string, status: number): Response {
+  return new Response(message, {
+    status,
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+  });
+}
+
 const authHandler = {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
     if (url.pathname === "/authorize") {
-      // @cloudflare/workers-oauth-provider parsed (and redirect-URI-checked) the
-      // client's request; carry it as state so /callback can complete the grant
-      // it belongs to. Plain JSON, not base64 — URLSearchParams already escapes
-      // it, and btoa would throw on any non-Latin-1 character a client puts in
-      // its own `state`.
-      const oauthReq = await env.OAUTH_PROVIDER.parseAuthRequest(request);
-      const state = JSON.stringify(oauthReq);
+      let state: string;
+      try {
+        // @cloudflare/workers-oauth-provider parses and redirect-URI-checks the
+        // client's request; carry it as state so /callback can complete the
+        // grant it belongs to. Plain JSON, not base64 — URLSearchParams already
+        // escapes it, and btoa would throw on any non-Latin-1 character a client
+        // puts in its own `state`.
+        state = JSON.stringify(await env.OAUTH_PROVIDER.parseAuthRequest(request));
+      } catch (e) {
+        // parseAuthRequest throws on an unregistered redirect URI, which is the
+        // first thing an operator gets wrong. An unhandled throw here is a bare
+        // 500 with nothing to act on, so name the likely cause. Its messages are
+        // fixed library strings — no secrets, no caller input.
+        return browserError(
+          "charter could not start sign-in for this client.\n\n" +
+            "The usual cause is that the client's redirect_uri is not " +
+            "registered with charter, or does not match the registered one " +
+            "exactly (they are compared byte for byte).\n\n" +
+            `(${(e as Error).message})`,
+          400,
+        );
+      }
       return Response.redirect(
         buildAuthorizeUrl(googleConfig(env, request.url), state),
         302,
@@ -174,9 +208,14 @@ const authHandler = {
       // before spending a Google round-trip on it.
       let oauthReq: AuthRequest;
       try {
-        oauthReq = JSON.parse(url.searchParams.get("state") ?? "");
+        const parsed: unknown = JSON.parse(url.searchParams.get("state") ?? "");
+        // `null` — and any other non-object — parses without throwing, so reject
+        // it here. Otherwise reading .clientId below is an uncaught 500, the
+        // same defect this guard exists to close.
+        if (!parsed || typeof parsed !== "object") throw new Error("not an object");
+        oauthReq = parsed as AuthRequest;
       } catch {
-        return new Response("invalid state", { status: 400 });
+        return browserError("invalid state", 400);
       }
 
       // parseAuthRequest already checked this redirect URI against the client's
@@ -185,9 +224,17 @@ const authHandler = {
       // re-checks nothing, so without this a crafted state sends an
       // authorization code to an address of the caller's choosing: an open
       // redirect in an authorization server. Cheap to re-run, so re-run it.
-      const client = await env.OAUTH_PROVIDER.lookupClient(oauthReq.clientId);
+      let client: Awaited<ReturnType<OAuthHelpers["lookupClient"]>>;
+      try {
+        client = await env.OAUTH_PROVIDER.lookupClient(oauthReq.clientId);
+      } catch {
+        // KV rejects oversized keys, so a forged clientId throws rather than
+        // missing. Swallow the cause: KV errors can echo the key they were
+        // given, and these keys are derived from grant material.
+        return browserError("invalid state", 400);
+      }
       if (!client?.redirectUris.includes(oauthReq.redirectUri)) {
-        return new Response("invalid redirect uri", { status: 400 });
+        return browserError("invalid redirect uri", 400);
       }
 
       const code = url.searchParams.get("code") ?? "";
@@ -200,15 +247,26 @@ const authHandler = {
         );
       } catch (e) {
         // Safe to show: google.ts redacts the client secret before throwing.
-        return new Response((e as Error).message, { status: 403 });
+        return browserError((e as Error).message, 403);
       }
-      const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
-        request: oauthReq,
-        userId: identity.email,
-        metadata: { label: identity.email },
-        scope: oauthReq.scope,
-        props: { identity } satisfies Props,
-      });
+      let redirectTo: string;
+      try {
+        ({ redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
+          request: oauthReq,
+          userId: identity.email,
+          metadata: { label: identity.email },
+          scope: oauthReq.scope,
+          props: { identity } satisfies Props,
+        }));
+      } catch {
+        // Writes the grant to KV and builds the redirect from the state's own
+        // fields, so it can throw on a KV failure or a malformed-but-registered
+        // request. Swallow the cause for the same reason as lookupClient above.
+        return browserError(
+          "charter could not finish sign-in. Start again from your client.",
+          400,
+        );
+      }
       return Response.redirect(redirectTo, 302);
     }
 
