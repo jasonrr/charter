@@ -113,3 +113,33 @@ describe("handleTool", () => {
     expect(seen).toHaveLength(0);
   });
 });
+
+describe("resource-link-out (§4.5)", () => {
+  const ref = { id: "A".repeat(32), bytes: 400000, mime: "application/json" };
+  const envelope = JSON.stringify({ ok: true, verb: "data.warehouse.query", request_id: "r", result_ref: ref });
+
+  it("packs a result_ref envelope as text + resource_link", async () => {
+    const { impl } = fakeFetch(200, envelope);
+    const r = await handleTool(impl, CFG, TOOL_READ_NAME, { verb: "data.warehouse.query" }, "t");
+    expect(r.isError).toBe(false);
+    expect(r.content[0].type).toBe("text");
+    const link = r.content[1] as { type: string; uri: string; mimeType?: string };
+    expect(link.type).toBe("resource_link");
+    expect(link.uri).toBe("charter://result/" + "A".repeat(32));
+    expect(link.mimeType).toBe("application/json");
+  });
+
+  it("leaves a plain success as a single text block", async () => {
+    const { impl } = fakeFetch(200, JSON.stringify({ ok: true, rows: [1] }));
+    const r = await handleTool(impl, CFG, TOOL_READ_NAME, { verb: "v" }, "t");
+    expect(r.content.length).toBe(1);
+    expect(r.content[0].type).toBe("text");
+  });
+
+  it("never links on an error result, even if the body looks like a ref", async () => {
+    const { impl } = fakeFetch(500, envelope);
+    const r = await handleTool(impl, CFG, TOOL_READ_NAME, { verb: "v" }, "t");
+    expect(r.isError).toBe(true);
+    expect(r.content.length).toBe(1);
+  });
+});
