@@ -209,6 +209,36 @@ def test_actor_invalid_maps_401_even_unflagged(monkeypatch):
     assert any(a[3] == "actor_invalid" for a, k in calls)
 
 
+def test_key_plus_granted_actor_is_flagged_in_audit(monkeypatch):
+    """Key wins scope over a present actor's grant; that override must be
+    visible in the trail, not silent (docs/remote-mcp.md §4.1)."""
+    _as_marketer(monkeypatch)
+    monkeypatch.setattr(main, "actor_email", lambda req: "sam@example.com")
+    monkeypatch.setattr(main, "grants_for", lambda email: ["data.*"])
+    calls = []
+    monkeypatch.setattr(main, "record", lambda *a, **k: calls.append((a, k)))
+    monkeypatch.setitem(main.VERBS, "sync.status",
+                        (lambda body, caller: {"healthy": True}, "post"))
+    body, status = _parse(main.bridge(FakeRequest(body={"verb": "sync.status"})))
+    assert status == 200  # the call still proceeds, under the key's scope
+    flagged = [(a, k) for a, k in calls if a[3] == "key_overrode_grant"]
+    assert len(flagged) == 1
+    assert flagged[0][1]["on_behalf_of"] == "sam@example.com"
+
+
+def test_key_plus_ungranted_actor_is_not_flagged(monkeypatch):
+    _as_marketer(monkeypatch)
+    monkeypatch.setattr(main, "actor_email", lambda req: "sam@example.com")
+    monkeypatch.setattr(main, "grants_for", lambda email: None)
+    calls = []
+    monkeypatch.setattr(main, "record", lambda *a, **k: calls.append((a, k)))
+    monkeypatch.setitem(main.VERBS, "sync.status",
+                        (lambda body, caller: {"healthy": True}, "post"))
+    body, status = _parse(main.bridge(FakeRequest(body={"verb": "sync.status"})))
+    assert status == 200
+    assert not any(a[3] == "key_overrode_grant" for a, k in calls)
+
+
 def test_dispatcher_begins_identity_context(monkeypatch):
     _as_marketer(monkeypatch)
     monkeypatch.setattr(main, "actor_email", lambda req: "sam@example.com")

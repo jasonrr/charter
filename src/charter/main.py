@@ -17,7 +17,7 @@ from uuid import uuid4
 import functions_framework
 
 from charter.auth import identify, identify_by_actor, allowed, reload as reload_keys
-from charter.grants import reload as reload_grants
+from charter.grants import grants_for, reload as reload_grants
 from charter.audit import record
 from charter.errors import VerbError
 from charter.actor_auth import actor_email
@@ -129,6 +129,7 @@ def bridge(request):
     verb = body.get("verb", "")
     target = _target(body)                     # computed once; reused by every branch
     caller = identify(request)                 # X-API-Key -> caller (headless)
+    from_key = caller is not None
     if caller is None:                         # no key: try the OAuth identity path
         # ponytail: an unknown key is treated as no key. Revoking a key does
         # not revoke a human's grant -- revoke that in charter-grants.
@@ -164,6 +165,15 @@ def bridge(request):
         return _json({"ok": False, "verb": verb, "error": "actor_required",
                       "detail": "Sign in first: call your identity provider login tool, then retry.",
                       "request_id": rid}, 401)
+    if from_key and actor and grants_for(actor) is not None:
+        # The key's allow-list governs this call (identify() wins), yet the
+        # verified human it is layered on holds their own grant. Legitimate
+        # for headless key+actor -- but the same precedence once made grants
+        # dead config behind a gateway key (docs/remote-mcp.md §4.1), and the
+        # reference gateway's no-key rule is not binding on other front ends,
+        # so the override is recorded rather than silent.
+        record(caller, verb, target, "key_overrode_grant", rid=rid,
+               on_behalf_of=actor)
     identity_context.begin(actor, body.get("allow_shared_credential"))
     fn, audit = VERBS.get(verb, (None, None))
     if fn is None:                             # prefix-dispatched families
