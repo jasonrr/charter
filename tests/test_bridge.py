@@ -100,17 +100,21 @@ def test_pre_audit_failure_returns_503(monkeypatch):
 
 
 def test_admin_reload_keys(monkeypatch):
-    # the admin.reload_keys verb forces a live key re-read and is audited
+    # the admin.reload_keys verb forces a live re-read of BOTH maps (keys and
+    # grants -- docs/deployment/grants.md promises it) and is audited
     monkeypatch.setattr(main, "identify",
                         lambda req: {"name": "jason", "interface": "cc", "allow": ["*"]})
     monkeypatch.setattr(main, "allowed", lambda caller, verb: True)
     monkeypatch.setattr(main, "record", lambda *a, **k: None)
-    hits = {"n": 0}
-    monkeypatch.setattr(main, "reload_keys", lambda: hits.__setitem__("n", hits["n"] + 1))
+    hits = {"keys": 0, "grants": 0}
+    monkeypatch.setattr(main, "reload_keys",
+                        lambda: hits.__setitem__("keys", hits["keys"] + 1))
+    monkeypatch.setattr(main, "reload_grants",
+                        lambda: hits.__setitem__("grants", hits["grants"] + 1))
     body, status = _parse(main.bridge(FakeRequest(body={"verb": "admin.reload_keys"})))
     assert status == 200
     assert body["ok"] is True and body["reloaded"] is True
-    assert hits["n"] == 1
+    assert hits == {"keys": 1, "grants": 1}
 
 
 def test_verberror_maps_to_status_and_audits(monkeypatch):
