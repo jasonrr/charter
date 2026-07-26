@@ -287,8 +287,9 @@ An **empty catalog is not one of the outcomes**: `verbs.list` is in core's
 verb. Zero verbs would mean something stranger than a missing grant.
 
 A `401` at the MCP transport layer — not inside a tool result — is a different
-thing again: that is the gateway telling the client its Google session died and
-it should re-run OAuth.
+thing again: that is the gateway telling the client its own session is over
+(no or expired MCP token, or a Google refresh that no longer works) and it
+should re-run OAuth. Neither grants nor core's client id is involved.
 
 **Negative authorization cases** — these are what prove the gateway stayed
 non-authoritative: the decision and the audit record both happen in core, not
