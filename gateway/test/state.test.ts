@@ -114,7 +114,11 @@ describe("sealState / openState", () => {
     const f = mintFlow();
     const state = await sealState(k, REQ, f, NOW);
     const [body, mac] = state.split(".");
-    const flipped = `${body}.${mac.slice(0, -1)}${mac.slice(-1) === "A" ? "B" : "A"}`;
+    // Flip the FIRST character, not the last. A 32-byte HMAC is 43 base64url
+    // characters = 258 bits, so the last character's low 2 bits are padding:
+    // "...A" and "...B" decode to identical bytes. Flipping the last character
+    // was a no-op exactly when the MAC ended in "A" -- a 1-in-16 false pass.
+    const flipped = `${body}.${mac[0] === "A" ? "B" : "A"}${mac.slice(1)}`;
     expect((await openState(k, flipped, jar(f), NOW)).ok).toBe(false);
   });
 
