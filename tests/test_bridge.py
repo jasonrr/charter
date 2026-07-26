@@ -100,17 +100,21 @@ def test_pre_audit_failure_returns_503(monkeypatch):
 
 
 def test_admin_reload_keys(monkeypatch):
-    # the admin.reload_keys verb forces a live key re-read and is audited
+    # the admin.reload_keys verb forces a live re-read of BOTH maps (keys and
+    # grants -- docs/deployment/grants.md promises it) and is audited
     monkeypatch.setattr(main, "identify",
                         lambda req: {"name": "jason", "interface": "cc", "allow": ["*"]})
     monkeypatch.setattr(main, "allowed", lambda caller, verb: True)
     monkeypatch.setattr(main, "record", lambda *a, **k: None)
-    hits = {"n": 0}
-    monkeypatch.setattr(main, "reload_keys", lambda: hits.__setitem__("n", hits["n"] + 1))
+    hits = {"keys": 0, "grants": 0}
+    monkeypatch.setattr(main, "reload_keys",
+                        lambda: hits.__setitem__("keys", hits["keys"] + 1))
+    monkeypatch.setattr(main, "reload_grants",
+                        lambda: hits.__setitem__("grants", hits["grants"] + 1))
     body, status = _parse(main.bridge(FakeRequest(body={"verb": "admin.reload_keys"})))
     assert status == 200
     assert body["ok"] is True and body["reloaded"] is True
-    assert hits["n"] == 1
+    assert hits == {"keys": 1, "grants": 1}
 
 
 def test_verberror_maps_to_status_and_audits(monkeypatch):
@@ -336,8 +340,9 @@ def test_oauth_caller_derived_when_no_api_key(monkeypatch):
     # No API key, but a verified actor whose email holds a grant.
     monkeypatch.setattr(main, "identify", lambda req: None)
     monkeypatch.setattr(main, "identify_by_actor",
-                        lambda req: {"name": "jason@example.com", "interface": "oauth",
-                                     "allow": ["*"], "require_actor": False})
+                        lambda req: ({"name": "jason@example.com", "interface": "oauth",
+                                      "allow": ["*"], "require_actor": False},
+                                     "jason@example.com"))
     monkeypatch.setattr(main, "actor_email", lambda req: "jason@example.com")
     monkeypatch.setattr(main, "record", lambda *a, **k: None)
     monkeypatch.setitem(main.VERBS, "sync.status",
@@ -350,7 +355,7 @@ def test_oauth_caller_derived_when_no_api_key(monkeypatch):
 def test_no_key_no_grant_is_401(monkeypatch):
     # Fail-closed: no API key and no grant -> unauthorized.
     monkeypatch.setattr(main, "identify", lambda req: None)
-    monkeypatch.setattr(main, "identify_by_actor", lambda req: None)
+    monkeypatch.setattr(main, "identify_by_actor", lambda req: (None, None))
     body, status = _parse(main.bridge(FakeRequest(body={"verb": "sync.status"})))
     assert status == 401
     assert body["error"] == "unauthorized"
@@ -418,7 +423,72 @@ def test_shape_invalid_grants_secret_yields_401_not_500(monkeypatch):
     monkeypatch.setattr(main, "identify", lambda req: None)
     monkeypatch.setattr(auth, "actor_email", lambda req: "jason@example.com")
     monkeypatch.setattr(main, "actor_email", lambda req: "jason@example.com")
-    monkeypatch.setattr(grants, "_fetch", lambda: {"jason@example.com": "not-a-dict"})
+    monkeypatch.setattr(grants._MAP, "_fetch", lambda: {"jason@example.com": "not-a-dict"})
+    grants.reload()
+    body, status = _parse(main.bridge(FakeRequest(body={"verb": "sync.status"})))
+    assert status == 401
+    assert body["error"] == "unauthorized"
+
+
+def test_verified_actor_without_grant_is_audited(monkeypatch):
+    # The identity is cryptographically verified -- core knows the email, looked
+    # it up, and found no grant. A departed employee still live in Workspace is
+    # exactly this case; probing the verb surface must leave evidence.
+    monkeypatch.setattr(main, "identify", lambda req: None)
+    monkeypatch.setattr(auth, "actor_email", lambda req: "departed@example.com")
+    monkeypatch.setattr(auth, "grants_for", lambda email: None)
+    recorded = []
+    monkeypatch.setattr(main, "record", lambda *a, **k: recorded.append((a, k)))
+    body, status = _parse(main.bridge(FakeRequest(body={"verb": "sync.status"})))
+    assert status == 401
+    assert body["error"] == "unauthorized"      # grant existence stays unleaked
+    assert "detail" not in body
+    assert [a[3] for a, k in recorded] == ["no_grant"]
+    assert recorded[0][0][0]["name"] == "departed@example.com"
+    assert recorded[0][0][0]["interface"] == "oauth"
+
+
+def test_no_actor_token_at_all_writes_no_audit_row(monkeypatch):
+    # The counterpart: an unauthenticated request carries no identity to audit,
+    # so it must stay a silent 401 (no row per anonymous probe).
+    monkeypatch.setattr(main, "identify", lambda req: None)
+    monkeypatch.setattr(auth, "actor_email", lambda req: None)
+    recorded = []
+    monkeypatch.setattr(main, "record", lambda *a, **k: recorded.append((a, k)))
+    body, status = _parse(main.bridge(FakeRequest(body={"verb": "sync.status"})))
+    assert status == 401 and body["error"] == "unauthorized"
+    assert recorded == []
+
+
+def test_invalid_actor_token_without_key_is_audited(monkeypatch):
+    # G4: the keyless path must produce the same audited actor_invalid the key
+    # path produces (test_actor_invalid_maps_401_even_unflagged), not collapse
+    # forged/replayed/expired tokens into a silent generic 401.
+    monkeypatch.setattr(main, "identify", lambda req: None)
+
+    def bad(req):
+        raise main.VerbError(401, "actor_invalid", "identity token rejected (ExpiredError)")
+
+    monkeypatch.setattr(auth, "actor_email", bad)
+    recorded = []
+    monkeypatch.setattr(main, "record", lambda *a, **k: recorded.append((a, k)))
+    body, status = _parse(main.bridge(FakeRequest(body={"verb": "sync.status"})))
+    assert status == 401
+    assert body["error"] == "actor_invalid"
+    assert body["detail"] == "identity token rejected (ExpiredError)"
+    assert [a[3] for a, k in recorded] == ["actor_invalid"]
+    assert recorded[0][1]["detail"] == "identity token rejected (ExpiredError)"
+
+
+def test_non_string_allow_element_yields_401_not_500(monkeypatch):
+    # Same shape of hand-edit typo, one level deeper: `[["*"]]` for `["*"]`.
+    # allowed() calls .endswith on each element from OUTSIDE bridge's try block.
+    import charter.grants as grants
+    monkeypatch.setattr(main, "identify", lambda req: None)
+    monkeypatch.setattr(auth, "actor_email", lambda req: "jason@example.com")
+    monkeypatch.setattr(main, "actor_email", lambda req: "jason@example.com")
+    monkeypatch.setattr(grants._MAP, "_fetch",
+                        lambda: {"jason@example.com": {"allow": [["*"]]}})
     grants.reload()
     body, status = _parse(main.bridge(FakeRequest(body={"verb": "sync.status"})))
     assert status == 401
