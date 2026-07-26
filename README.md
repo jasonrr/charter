@@ -11,7 +11,7 @@ rigid configuration (can't express business logic). Charter is the middle path:
 audit trails, and actor identity. A verb is a function with a name like
 `data.warehouse.query` or `airtable.batch_update`, registered by a **pack**
 (adapter module), dispatched by the engine, and called by an AI agent through
-an MCP proxy.
+remote MCP (the charter gateway).
 
 Charter runs in production at [Radical Candor](https://www.radicalcandor.com),
 which consumes this public engine plus a private pack of its own verbs — the
@@ -104,7 +104,10 @@ charter keys mint --name my-agent --allow "data.*"
 - **SDK** (`charter.sdk`): Five primitives for pack authors. Small, typed, agent-legible.
 - **Packs** (`charter.packs.*`): Reference adapters (BigQuery warehouse queries, Airtable batch updates). You write your own for your stack.
 - **Conformance** (`charter.packtest`): Agent-runnable contract suite. Your coding agent runs this to verify its pack works.
-- **Proxy** (`plugin/proxy/charter_mcp.js`): stdio MCP server. Claude Desktop / Claude Code plugin. Zero dependencies.
+- **Gateway** (`gateway/`): remote MCP server (Streamable HTTP + OAuth) that
+  translates to the engine. How it is deployed and how charter is
+  distributed: [`docs/deployment/gateway.md`](docs/deployment/gateway.md),
+  [`docs/distribution.md`](docs/distribution.md).
 
 ## Configuration
 

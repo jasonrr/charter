@@ -6,19 +6,21 @@ an agent. Everything else is agent-executable.
 ## Prerequisites
 
 - Python 3.10–3.12
-- Node.js ≥ 18 (for the MCP proxy only)
 - A Google Cloud project with BigQuery and Secret Manager enabled
-- Claude Code (for the plugin) or Claude Desktop (for the `.mcpb` extension)
+- Claude Code, Claude Desktop, or another Claude surface that speaks remote MCP
 
-## Step 1: Create your Google OAuth client — [human]
+## Step 1: Google OAuth client — created during gateway deployment
 
-1. Go to https://console.cloud.google.com/apis/credentials
-2. Click **Create Credentials** → **OAuth client ID** → **Desktop app**
-3. Name it "charter-identity"
-4. Copy the **Client ID** and **Client secret** — you'll need both
+There's no separate client to create here. The Google **Web application**
+OAuth client charter uses for actor identity is created as part of deploying
+the gateway (`docs/deployment/gateway.md` step 1), and core's
+`GOOGLE_OAUTH_CLIENT_ID` must be set to that same client id
+(`docs/configuration.md` documents this).
 
-This client is used only for actor identity (openid email scope). It grants no
-access to Gmail, Drive, or other Google APIs.
+**Cutover note:** if you're upgrading from the earlier stdio-based install,
+delete its Desktop OAuth client in the Google Cloud console once the gateway
+is live — nothing uses it after that install path is retired
+(`docs/remote-mcp.md` §4.6 "Audience").
 
 ## Step 2: Install the package
 
@@ -125,7 +127,7 @@ curl -s -X POST http://localhost:8080 \
 ```
 
 Expected: `actor_required` — correct at this stage; no human actor has signed
-in yet. Identity comes from the proxy in Step 6.
+in yet. Identity comes from the gateway sign-in in Step 7.
 
 With a placeholder `GCP_PROJECT`, the engine terminal also logs `audit write
 failed … Not found` on each call. That's harmless — auditing fails open, so the
@@ -142,31 +144,24 @@ claude plugin marketplace add jasonrr/charter
 claude plugin install charter@charter
 ```
 
-Claude Code prompts for the plugin configuration:
+One configuration value: `gateway_url` — your charter-gateway origin (from
+`docs/deployment/gateway.md`). No credential is pasted; sign-in happens in
+the browser on first use.
 
-- `charter_url`: your bridge URL (e.g. `http://localhost:8080` from Step 5, or
-  your deployed URL)
-- `credential` — **[human]**: paste your credential. Format
-  `cf-client-id:cf-client-secret:api-key` behind Cloudflare Access; a bare
-  API key otherwise. Never relay this through an agent.
-- `google_client_id` / `google_client_secret` — **[human]**: from Step 1.
-- `domain_hint`, `hubspot_client_id`: optional.
-
-Claude Desktop instead: run `./desktop-extension/build.sh`, then double-click
-the built `charter.mcpb` and enter the same values — **[human]**.
-
-## Step 7: End-to-end verify through the proxy
+## Step 7: End-to-end verify through the gateway
 
 In a Claude Code conversation, in order:
 
-1. Ask for **`verbs.list`** (the `charter_read` tool). Expected: the catalog —
-   proves URL, credential, and key scope.
-2. Run **`charter_login`** — **[human]**: a browser opens for Google OAuth
-   consent; sign in with an `ALLOWED_DOMAIN` address.
-3. Ask for **`identity.whoami`**. Expected: your email and `is_human: true` —
-   the `actor_required` from Step 5 is gone.
+1. On first tool use, the client opens the gateway's consent page, then
+   Google sign-in — **[human]**: use an `ALLOWED_DOMAIN` address that has a
+   grant (`docs/deployment/grants.md`).
+2. Ask for **`verbs.list`** (the `charter_read` tool). Expected: the catalog
+   filtered to your grant — proves gateway URL, OAuth, and grants end-to-end.
+3. Ask for **`identity.whoami`**. Expected: your email and `is_human: true`.
 4. Call one read verb from your pack's domain (e.g. `data.warehouse.schema`).
-   Expected: real data, and an audit row attributing the call to you.
+   Expected: real data, and an audit row naming you as the caller
+   (`interface: "oauth"`).
 
-If step 1 fails, the problem is credential/URL; if step 3 fails, it's the
-OAuth client or domain allow-list. The steps isolate the failure layer.
+If step 1 fails, the problem is the gateway deployment or its Google client;
+if step 2 returns nothing, your email has no grant; the steps isolate the
+failure layer.
