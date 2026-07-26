@@ -21,10 +21,12 @@ Note the client id and secret.
 **Register every hostname you'll use.** The redirect URI the gateway builds
 follows the incoming request's `Host` header, so a `*.workers.dev` address
 *and* any custom domain you route to the Worker each need their own
-`https://<host>/callback` entry above. If you register only one, sign-in works
-on that hostname and fails silently on the other — there's no error pointing
-at the mismatch, just a client stuck at Google's consent screen or bounced
-back with an error page.
+`https://<host>/callback` entry above. Each hostname beyond
+`CHARTER_GATEWAY_URL` also has to be listed in `CHARTER_EXTRA_REDIRECT_ORIGINS`
+(step 4) or sign-in on it returns a `503` naming the mismatch. Once it is listed,
+though, the Google side is on you: a hostname the gateway will answer but Google
+has no redirect URI for fails silently — no error points at the mismatch, just a
+client stuck at Google's consent screen or bounced back with an error page.
 
 ## 2. Repoint core at that client
 
@@ -41,7 +43,26 @@ removed in the same release (sub-project D). **Do not repoint until you are
 ready to cut over** — from that moment, every human still on the old proxy is
 locked out until they switch to the gateway.
 
-## 3. Configure and deploy the gateway
+## 3. Grant scope to the humans who will sign in
+
+Do this before anyone connects, not after they hit a 401. On the gateway path a
+human's scope comes only from core's `charter-grants` secret, and **no step below
+creates it** — nothing in the gateway deploy touches core's secrets. If it does
+not exist, or exists and is empty, every signed-in human is locked out:
+`grants_for` fails closed, so core answers `unauthorized` (401) and audits the
+attempt as `no_grant`.
+
+    cat > /tmp/grants.json <<'JSON'
+    {
+      "you@yourdomain.com": {"allow": ["*"]}
+    }
+    JSON
+    gcloud secrets create charter-grants --data-file=/tmp/grants.json
+
+Full syntax, editing, and the fail-closed cases: `docs/deployment/grants.md`.
+Core re-reads the secret within ~60s, or immediately on `admin.reload_keys`.
+
+## 4. Configure and deploy the gateway
 
 Requires `wrangler` **4.x or later** — `gateway/package.json` pins `4.107.0`.
 Wrangler 3's bundled `workerd` predates `cloudflare:email`, which the `agents`
@@ -67,13 +88,34 @@ Set the non-secret values in `wrangler.jsonc` → `vars`:
 - `CHARTER_CORE_URL` — your core endpoint, https only
 - `CHARTER_ALLOWED_DOMAIN` — e.g. `@yourdomain.com`, matching core's setting
 - `GOOGLE_CLIENT_ID` — from step 1
-- `CHARTER_GATEWAY_URL` — this gateway's own canonical origin, e.g.
-  `https://<your-gateway-host>`. Used only to decide which redirect URIs a
-  dynamically registered client may claim as "this gateway" — pinned here
-  rather than read off the request, so a Worker reachable on a Host it wasn't
-  meant to answer can't get that Host whitelisted at registration time. If you
-  answer more than one hostname (see "Register every hostname" above), add the
-  others to `CHARTER_EXTRA_REDIRECT_ORIGINS` below.
+- `CHARTER_GATEWAY_URL` — **required.** This gateway's own canonical origin,
+  https, e.g. `https://<your-gateway-host>`. Two things read it: which redirect
+  URIs a dynamically registered client may claim as "this gateway", and what the
+  gateway publishes as its own resource identity in protected-resource metadata
+  (`src/prm.ts`). Both are pinned to this value rather than read off the incoming
+  request, so a Worker reachable on a Host it wasn't meant to answer can't get
+  that Host whitelisted at registration time. If you answer more than one
+  hostname (see "Register every hostname" above), add the others to
+  `CHARTER_EXTRA_REDIRECT_ORIGINS` below.
+
+  Getting it wrong is loud, in three places (`src/gateway_url.ts`):
+
+  - **Unset, or not an `https://` URL** — `/authorize`, `/authorize/continue`
+    and `/callback` return `503` naming it, alongside the other required config.
+  - **Set but not this deployment's origin** — the same three routes return
+    `503` naming both origins: `CHARTER_GATEWAY_URL is https://a, but this
+    request arrived at https://b`. A request arriving on a loopback host is
+    exempt, so `wrangler dev` still runs against a production-shaped config.
+  - **Unusable at all** — `POST /register` answers `500 server_error` rather
+    than screening against an empty origin, and the metadata endpoints answer
+    `500` rather than publishing an origin the operator never chose.
+
+  The shipped placeholder is `https://charter-gateway.example.com`. It used to be
+  a `workers.dev` address, which is a real namespace a third party can register:
+  an unedited placeholder would have let whoever holds that subdomain register
+  redirect URIs accepted as "this gateway", with the consent screen showing their
+  host as the destination. `example.com` is IANA-reserved, and the mismatch check
+  above means an unedited value now stops sign-in instead of quietly widening it.
 - `CHARTER_EXTRA_REDIRECT_ORIGINS` — optional, comma-separated extra https
   origins clients may register redirect URIs on. Empty (closed) by default; see
   "Sign-in is bound to one browser" below before widening it.
@@ -119,11 +161,16 @@ victim's Google identity delivered into a grant the attacker holds — see
 never sent anywhere, so rotating it costs only the sign-ins currently in flight.
 
 **Nothing here may be left unset.** If any of `GOOGLE_CLIENT_ID`,
-`GOOGLE_CLIENT_SECRET`, `OAUTH_STATE_SECRET` or `CHARTER_ALLOWED_DOMAIN` is
-missing, `/authorize` and `/callback` return `503` naming exactly which ones,
-rather than failing somewhere further away — an empty `GOOGLE_CLIENT_ID` used to
+`GOOGLE_CLIENT_SECRET`, `OAUTH_STATE_SECRET`, `CHARTER_ALLOWED_DOMAIN` or
+`CHARTER_GATEWAY_URL` is missing, the sign-in routes — `/authorize`,
+`/authorize/continue` and `/callback`, the full set in `src/routes.ts` — return
+`503` naming exactly which ones, rather than failing somewhere further away. An
+empty `GOOGLE_CLIENT_ID` used to
 surface as Google's own "Could not determine client ID from request" in the
-user's browser. There is deliberately **no** unsigned-state fallback: without
+user's browser, and `/authorize/continue` was once missing from this gate
+entirely, so an unset `OAUTH_STATE_SECRET` reached `crypto.subtle.importKey` as
+a zero-length key and came back a bare `500`. There is deliberately **no**
+unsigned-state fallback: without
 `OAUTH_STATE_SECRET` the sign-in routes do not run at all. An unset CF Access
 pair is simply omitted from the request rather than sent as empty headers, so it
 fails at the tunnel as a clean rejection rather than a raw exception surfaced to
@@ -131,7 +178,7 @@ the model.
 
     npx wrangler deploy
 
-## 4. Connect a client
+## 5. Connect a client
 
 Add the endpoint to `.mcp.json`:
 
@@ -153,6 +200,20 @@ Metadata endpoint:
 Expect `authorization_endpoint`, `token_endpoint`, and
 `code_challenge_methods_supported` containing `S256`.
 
+Protected-resource metadata (RFC 9728) — this is what an MCP client reads to
+find the authorization server, so a deploy where it is wrong looks to a client
+like a gateway with no OAuth at all:
+
+    curl -s https://<your-gateway-host>/.well-known/oauth-protected-resource/mcp | jq .
+
+Expect `resource` equal to `https://<your-gateway-host>/mcp`,
+`authorization_servers` listing `https://<your-gateway-host>`, and
+`bearer_methods_supported` of `["header"]`. The bare
+`/.well-known/oauth-protected-resource` is served too, describing the origin
+itself rather than `/mcp` — clients probe both. Both are built from
+`CHARTER_GATEWAY_URL`, so a `resource` that isn't the host you curled means that
+var is stale (see step 4).
+
 **Security checks** — confirm these before treating a deploy as done, not just
 the happy path:
 
@@ -160,7 +221,20 @@ the happy path:
   is *offered*. It does not mean PKCE is required: the OAuth library treats
   PKCE as optional and advertises `"plain"` alongside `"S256"`, with no option
   to withdraw either. See "PKCE is offered, not required" below.
-- Unauthenticated `POST /mcp` returns `401`.
+- Unauthenticated `POST /mcp` returns `401`, and its `WWW-Authenticate` header
+  carries `resource_metadata="https://<your-gateway-host>/.well-known/oauth-protected-resource/mcp"`:
+
+      curl -s -o /dev/null -D - -X POST https://<your-gateway-host>/mcp \
+        -H 'Content-Type: application/json' -d '{}' | grep -i www-authenticate
+
+- An unknown path returns `404`, not a cheerful `200`. The gateway's catch-all
+  answers only `/`; everything else is a 404. This is the check that would have
+  caught the missing metadata endpoint, which for a while was answered by that
+  catch-all as an unparseable `200 charter-gateway`:
+
+      curl -s -o /dev/null -w '%{http_code}\n' https://<your-gateway-host>/nope
+      # expect 404
+
 - A forged `state` on `/callback` returns `400`. The state is HMAC-signed and
   bound to a browser cookie (`gateway/src/state.ts`, unit-tested), so this is
   belt-and-braces rather than the only line of defence — but verify it on every
@@ -192,9 +266,29 @@ the happy path:
 
 **Happy path**, from a real client: point it at `https://<your-gateway-host>/mcp`,
 complete the Google sign-in, and run `verbs.list` through `charter_read`.
-Expect the catalog scoped to that email's grant — if you see none, your email
-has no grant (see `docs/deployment/grants.md`); if you get a 401, core is not
-pointed at the gateway's Google client id (step 2).
+Expect the catalog scoped to that email's grant.
+
+**If it fails, read the `error` field, not the status code.** Both of the two
+likely causes are a `401` from core, arriving as an errored tool result whose
+text starts `HTTP 401:` and carries core's JSON body — the body is what tells
+them apart:
+
+- `"error": "unauthorized"` — your email has no grant. Core audits it as
+  `no_grant`; fix it in `charter-grants` (step 3, and
+  `docs/deployment/grants.md`). This is also what a *malformed* entry for your
+  email looks like from out here, so check core's logs for a
+  `charter grants: … -- fail-closed` line before assuming the entry is absent.
+- `"error": "actor_invalid"`, with a `detail` naming the rejection — core is not
+  pointed at the gateway's Google client id (step 2), so the audience check on
+  your ID token fails.
+
+An **empty catalog is not one of the outcomes**: `verbs.list` is in core's
+`_ALWAYS_ALLOWED`, so any caller core authenticated at all sees at least that
+verb. Zero verbs would mean something stranger than a missing grant.
+
+A `401` at the MCP transport layer — not inside a tool result — is a different
+thing again: that is the gateway telling the client its Google session died and
+it should re-run OAuth.
 
 **Negative authorization cases** — these are what prove the gateway stayed
 non-authoritative: the decision and the audit record both happen in core, not
@@ -209,6 +303,18 @@ here.
   signed-in email as the actor — not `on_behalf_of` under some other actor.
 
 ## Known limitations
+
+- **A response over 1 MB comes back as an error, not a partial result.**
+  `core.ts` caps what it reads from core at 1 MB — the same cap the stdio proxy
+  had on what may enter a model's context — and appends `...[truncated]`. A
+  truncated body is unparseable JSON, so reporting a 2xx as success would hand
+  the model a broken result and tell it that it worked; instead a truncated
+  response is returned with `isError: true` even though the HTTP call succeeded.
+  The model sees a failure it can act on rather than silently wrong data. This
+  is an interim behaviour: the designed answer is resource-link-out
+  (`docs/remote-mcp.md` §4.5), which is sub-project C. Until then, a verb whose
+  result can exceed 1 MB is not usable through the gateway — narrow the query,
+  or have the verb return a reference.
 
 - **Sessions cost a Google round-trip past the one-hour mark.** The gateway
   re-mints the Google ID token on demand, but the re-minted token is never
@@ -321,6 +427,20 @@ here.
   displaying. That is what makes consent trustworthy instead of only present —
   today's screen still asks a human to recognise an origin. Not implemented on
   this branch; tracked as follow-up.
+
+- **`index.ts` has no unit tests, so the wiring is verified by curl, not CI.**
+  `gateway/test/` cannot import `src/index.ts`: it pulls in `cloudflare:*`
+  built-ins (through `agents/mcp` and `@cloudflare/workers-oauth-provider`) that
+  plain vitest cannot resolve. Everything with a decision in it was pushed down
+  into a pure module and is tested there — `prm.ts`, `routes.ts`,
+  `gateway_url.ts`, `redirect_uri.ts`, `state.ts`, `core.ts`, `redact.ts`,
+  `google.ts`, `tools.ts`, 142 tests. But their *composition* in `index.ts` is
+  not: the protected-resource route and its CORS preflight, the `404` catch-all,
+  the `resource_metadata` decoration on a `401` from `/mcp`, and the config gate
+  that turns `missingConfig`/`gatewayUrlProblem` into a `503` are all reached
+  only through the Worker. That is exactly why the Verifying section above has a
+  curl for each of them; run them on any deploy that touches `index.ts`. Closing
+  this properly means `@cloudflare/vitest-pool-workers`.
 
 - **Five moderate `npm audit` advisories are knowingly deferred**, all one
   root cause: a Windows path-traversal issue in `@hono/node-server` (used only
