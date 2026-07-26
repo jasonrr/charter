@@ -14,6 +14,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpHandler, getMcpAuthContext } from "agents/mcp";
 import OAuthProvider, {
+  type AuthRequest,
   type OAuthHelpers,
   type OAuthProviderOptions,
 } from "@cloudflare/workers-oauth-provider";
@@ -112,11 +113,41 @@ function buildServer(env: Env, gatewayUrl: string): McpServer {
     return handleTool(fetch, coreConfig(env), toolName, args, idToken);
   };
 
-  server.tool(TOOL_READ_NAME, TOOL_READ_DESCRIPTION, TOOL_INPUT_SHAPE, (a) =>
-    run(TOOL_READ_NAME, a),
+  // Annotations are carried over verbatim from the stdio proxy
+  // (plugin/proxy/charter_mcp.js:94 and :126). They are what makes
+  // TOOL_READ_DESCRIPTION's "safe to always-allow" claim machine-readable — a
+  // client can act on readOnlyHint instead of parsing English out of the
+  // description. Read is registered first, as the proxy's own check expects.
+  //
+  // ponytail: these sit here rather than beside the descriptions they belong
+  // with in tools.ts only because tools.ts is closed for review.
+  server.registerTool(
+    TOOL_READ_NAME,
+    {
+      description: TOOL_READ_DESCRIPTION,
+      inputSchema: TOOL_INPUT_SHAPE,
+      annotations: {
+        title: "Read charter data (read-only)",
+        readOnlyHint: true,
+        openWorldHint: false,
+      },
+    },
+    (a) => run(TOOL_READ_NAME, a),
   );
-  server.tool(TOOL_CALL_NAME, TOOL_CALL_DESCRIPTION, TOOL_INPUT_SHAPE, (a) =>
-    run(TOOL_CALL_NAME, a),
+  server.registerTool(
+    TOOL_CALL_NAME,
+    {
+      description: TOOL_CALL_DESCRIPTION,
+      inputSchema: TOOL_INPUT_SHAPE,
+      annotations: {
+        title: "Call charter verb",
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    (a) => run(TOOL_CALL_NAME, a),
   );
   return server;
 }
@@ -125,20 +156,11 @@ const apiHandler = {
   fetch(request: Request, env: Env, ctx: ExecutionContext) {
     // createMcpHandler reads the grant's props off ctx, which OAuthProvider
     // decrypted and attached before routing here.
-    //
-    // The cast bridges a version skew, not a shape mismatch: `agents` 0.2.35
-    // depends on @modelcontextprotocol/sdk 1.23.0 exactly and gets its own
-    // nested copy, while this package builds against 1.29.0. The two McpServer
-    // classes are structurally identical for everything used here; TypeScript
-    // rejects the assignment only because `Server` declares a private field,
-    // which makes the comparison nominal. Everything 1.29's Transport adds over
-    // 1.23's is optional, so agents' WorkerTransport still satisfies the server
-    // it is handed. Deduping the SDK would remove the cast — see the task-4
-    // report before changing either pin.
-    const server = buildServer(env, request.url) as unknown as Parameters<
-      typeof createMcpHandler
-    >[0];
-    return createMcpHandler(server, { route: "/mcp" })(request, env, ctx);
+    return createMcpHandler(buildServer(env, request.url), { route: "/mcp" })(
+      request,
+      env,
+      ctx,
+    );
   },
 };
 
@@ -163,8 +185,27 @@ const authHandler = {
     }
 
     if (url.pathname === "/callback") {
+      // Everything on this path is caller-supplied, so validate the state
+      // before spending a Google round-trip on it.
+      let oauthReq: AuthRequest;
+      try {
+        oauthReq = JSON.parse(url.searchParams.get("state") ?? "");
+      } catch {
+        return new Response("invalid state", { status: 400 });
+      }
+
+      // parseAuthRequest already checked this redirect URI against the client's
+      // registered set — but at /authorize, and the check does not survive the
+      // trip through `state`. The state is unsigned and completeAuthorization
+      // re-checks nothing, so without this a crafted state sends an
+      // authorization code to an address of the caller's choosing: an open
+      // redirect in an authorization server. Cheap to re-run, so re-run it.
+      const client = await env.OAUTH_PROVIDER.lookupClient(oauthReq.clientId);
+      if (!client?.redirectUris.includes(oauthReq.redirectUri)) {
+        return new Response("invalid redirect uri", { status: 400 });
+      }
+
       const code = url.searchParams.get("code") ?? "";
-      const state = url.searchParams.get("state") ?? "";
       let identity: GoogleIdentity;
       try {
         identity = await exchangeCode(
@@ -176,7 +217,6 @@ const authHandler = {
         // Safe to show: google.ts redacts the client secret before throwing.
         return new Response((e as Error).message, { status: 403 });
       }
-      const oauthReq = JSON.parse(state);
       const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
         request: oauthReq,
         userId: identity.email,
