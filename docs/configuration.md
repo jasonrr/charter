@@ -17,6 +17,7 @@ All engine configuration is via environment variables. No config files, no YAML.
 | `PACKS` | `charter` | Comma-separated list of pack distributions to load via entry-point discovery |
 | `KEYS_SECRET_NAME` | `charter-keys` | Secret Manager secret holding API keys |
 | `GRANTS_SECRET_NAME` | `charter-grants` | Secret Manager secret holding the email→allow grants map |
+| `CHARTER_KEYS` | (empty) | Key map JSON, cold-start fallback if Secret Manager is unreachable at boot |
 | `CHARTER_GRANTS` | (empty) | Grants JSON, cold-start fallback if Secret Manager is unreachable at boot |
 | `GOOGLE_REFRESH_SECRET_NAME` | `charter-google-refresh` | Secret Manager secret holding Google refresh tokens |
 | `AUDIT_TABLE` | `charter.audit` | BigQuery table for audit logs |
