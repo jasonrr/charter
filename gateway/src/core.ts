@@ -14,6 +14,17 @@
 /** 1 MB, matching the stdio proxy's cap on what may enter a model's context. */
 const MAX_RESPONSE_BYTES = 1 << 20;
 
+const TRUNCATE_SUFFIX = "\n...[truncated]";
+// Suffix is ASCII, so its char length equals its byte length.
+const TRUNCATE_SUFFIX_BYTES = TRUNCATE_SUFFIX.length;
+// Cutting a raw byte slice mid-character can turn a 1-3 byte UTF-8 sequence
+// into a single 3-byte U+FFFD replacement char on decode — up to 2 bytes
+// bigger than what it replaced. Reserve that much extra so the final,
+// re-encoded result can never land over the cap even in that worst case.
+const UTF8_REPLACEMENT_SLACK = 2;
+const TRUNCATE_BUDGET_BYTES =
+  MAX_RESPONSE_BYTES - TRUNCATE_SUFFIX_BYTES - UTF8_REPLACEMENT_SLACK;
+
 export type CoreConfig = {
   url: string;
   credential: string;
@@ -56,6 +67,62 @@ function scrub(text: string, cfg: CoreConfig): string {
     if (secret && secret.length >= 4) out = out.split(secret).join("[redacted]");
   }
   return out;
+}
+
+/**
+ * Read a response body capped at MAX_RESPONSE_BYTES, streaming — the Workers
+ * port of the stdio proxy's readCapped() (plugin/proxy/charter_mcp.js:353).
+ * Buffering the full body first (as `res.text()` would) defeats the point of
+ * a cap: a Worker isolate is more memory-constrained than the Node process
+ * the original ran in, and isolates can be shared across concurrent
+ * requests, so one oversized upstream response can hurt more than itself.
+ * Reading the stream also means the cap is counted in actual bytes, not
+ * UTF-16 code units — a body full of multi-byte characters no longer runs
+ * well past the cap before truncating.
+ */
+async function readCapped(res: Response): Promise<string> {
+  const body = res.body;
+  if (!body) return res.text(); // e.g. an empty body under some runtimes
+
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let truncated = false;
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value || value.length === 0) continue;
+    if (total >= MAX_RESPONSE_BYTES) {
+      truncated = true;
+      break;
+    }
+    if (total + value.length > MAX_RESPONSE_BYTES) {
+      chunks.push(value.subarray(0, MAX_RESPONSE_BYTES - total));
+      total = MAX_RESPONSE_BYTES;
+      truncated = true;
+      break;
+    }
+    chunks.push(value);
+    total += value.length;
+  }
+  // Stop draining bytes we're about to discard rather than let the
+  // connection sit reading the rest of an oversized body.
+  if (truncated) await reader.cancel().catch(() => {});
+
+  let combined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.length;
+  }
+  if (truncated) combined = combined.subarray(0, TRUNCATE_BUDGET_BYTES);
+
+  // Default (non-fatal) decode: a slice can land mid-character on the way
+  // in; this tolerates that with a replacement char instead of throwing.
+  let text = new TextDecoder("utf-8").decode(combined);
+  if (truncated) text += TRUNCATE_SUFFIX;
+  return text;
 }
 
 export async function callCore(
@@ -111,13 +178,7 @@ export async function callCore(
     };
   }
 
-  let text = await res.text();
-  if (text.length > MAX_RESPONSE_BYTES) {
-    const suffix = "\n...[truncated]";
-    // Leave room for the suffix so the result is always shorter than the
-    // original, even when the overage is smaller than the suffix itself.
-    text = text.slice(0, MAX_RESPONSE_BYTES - suffix.length) + suffix;
-  }
+  const text = await readCapped(res);
   if (res.status >= 200 && res.status < 300) {
     return { text, isError: false };
   }

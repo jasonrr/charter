@@ -110,6 +110,43 @@ describe("callCore", () => {
     expect(r.text.endsWith("\n...[truncated]")).toBe(true);
   });
 
+  const CAP_BYTES = 1024 * 1024;
+
+  it("truncates a response whose byte length exceeds the cap, staying within it in bytes", async () => {
+    const big = "x".repeat(CAP_BYTES + 10);
+    const { impl } = fakeFetch(200, big);
+    const r = await callCore(impl, CFG, "verbs.list", {}, {});
+    expect(r.isError).toBe(false);
+    expect(r.text.endsWith("\n...[truncated]")).toBe(true);
+    expect(new TextEncoder().encode(r.text).length).toBeLessThanOrEqual(CAP_BYTES);
+  });
+
+  it("caps a multi-byte UTF-8 body by bytes, not characters, without throwing", async () => {
+    // Each "é" is 2 bytes in UTF-8 but 1 UTF-16 code unit — a char-length cap
+    // would let a body like this run to ~2x the byte cap before truncating.
+    const big = "é".repeat(CAP_BYTES);
+    const { impl } = fakeFetch(200, big);
+    const r = await callCore(impl, CFG, "verbs.list", {}, {});
+    expect(r.isError).toBe(false);
+    expect(r.text.endsWith("\n...[truncated]")).toBe(true);
+    expect(new TextEncoder().encode(r.text).length).toBeLessThanOrEqual(CAP_BYTES);
+    // At most the final cut character decodes to a replacement char — no mess.
+    expect((r.text.match(/�/g) ?? []).length).toBeLessThanOrEqual(1);
+  });
+
+  it("does not truncate a body exactly at the cap", async () => {
+    const exact = "x".repeat(CAP_BYTES);
+    const { impl } = fakeFetch(200, exact);
+    const r = await callCore(impl, CFG, "verbs.list", {}, {});
+    expect(r).toEqual({ text: exact, isError: false });
+  });
+
+  it("handles an empty body", async () => {
+    const { impl } = fakeFetch(200, "");
+    const r = await callCore(impl, CFG, "verbs.list", {}, {});
+    expect(r).toEqual({ text: "", isError: false });
+  });
+
   it("returns an error, not a throw, when the network fails", async () => {
     const impl = (async () => {
       throw new Error("connection reset");
