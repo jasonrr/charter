@@ -64,11 +64,24 @@ boundary instead of a deployment detail.
 |---|---|---|
 | **Tracks** | the MCP spec | charter semantics |
 | **Language/runtime** | TS on Workers (reference impl) | Python, GCP |
-| **Owns** | transport, OAuth, MCP↔verb translation, discovery caching | verbs, packs, SDK, packtest |
-| **Holds** | core's CF-Access service token (and no API key — §4.1) | keys, grants policy, audit table |
+| **Owns** | transport, OAuth, MCP↔verb translation, protected-resource metadata (§4.3) | verbs, packs, SDK, packtest |
+| **Holds** | core's CF-Access service token; no API key on a human's call (§4.1) | keys, grants policy, audit table |
 | **Decides** | nothing governed | authorization, fail-closed |
 | **Writes audit** | never | always |
 | **Verifies identity token** | no (forwards it) | **yes** |
+
+**The gateway caches nothing, and that is structural.** An earlier version of
+this table gave it "discovery caching"; it has never had any. §5's stateless
+choice means a plain Worker with a fresh `McpServer` per request and no Durable
+Object, so there is no process to hold a cache — `verbs.list` passes straight
+through to core on every call, which is also what keeps the catalog honest when
+a grant changes. The only thing the deployment persists is the OAuth grant, in
+KV, and that is the library's.
+
+*Holds, precisely:* the reference gateway's `Env` does define an optional
+`CHARTER_API_KEY`, wired through to `CoreConfig.apiKey` — but `authHeaders`
+sends it only on a call with no actor token, and no route reaches core without
+one today (§7.1). It should stay unset.
 
 ### 2.5 Naming, against the existing lexicon
 
@@ -167,10 +180,14 @@ scope (§4.1). This is `charter_mcp.js`'s
 `handle()`/`callBridge()` logic minus the local file tricks, plus OAuth and the
 current transport requirements (§5).
 
-The four-tool surface (`charter_call`, `charter_read`, `charter_login`,
-`charter_connect_hubspot`) is inherited, minus `charter_login` — OAuth at install
-replaces it. Verb discovery stays on-demand via `verbs.list`, so the constant
-context cost that motivates charter is preserved.
+**Two tools ship: `charter_read` and `charter_call`.** The proxy's four-tool
+surface (`charter_call`, `charter_read`, `charter_login`,
+`charter_connect_hubspot`) loses *both* of its local-flow tools, not just one:
+`charter_login` because OAuth at install replaces it, and
+`charter_connect_hubspot` because it needs a loopback listener a remote gateway
+does not have — see §4.6, which scopes it out of B. Verb discovery stays
+on-demand via `verbs.list`, so the constant context cost that motivates charter
+is preserved.
 
 ### 4.3 OAuth model
 
@@ -181,6 +198,39 @@ gateway is an OAuth **resource server** advertising protected-resource metadata
 upstream IdP (openid email) — the audience is the gateway, not Google. This is
 the PostHog "sign in, we federate your provider" flow. No bespoke long-lived
 credential is minted or written to disk (that was B-lite, rejected).
+
+**What "advertising protected-resource metadata" now means, concretely.** The
+spec is a `MUST` on both halves — "MCP servers MUST implement OAuth 2.0
+Protected Resource Metadata (RFC9728)", and MCP *clients* MUST use it for
+authorization-server discovery — and then requires **one of** two mechanisms to
+point at it. The reference gateway implements both (`gateway/src/prm.ts`):
+
+- **Well-known URI.** RFC 9728 §3.1 inserts the well-known segment before the
+  resource's path, so `https://gw/mcp` is described at
+  `https://gw/.well-known/oauth-protected-resource/mcp`. Clients probe that
+  path-suffixed form first and the bare root second, so both paths are served,
+  each reporting the resource *its own* URL identifies — a client that derived
+  the URL checks `resource` against it. `authorization_servers` is the gateway
+  itself; Google is federated behind it and clients never talk to Google.
+- **`WWW-Authenticate` header.** A `401` from `/mcp` carries
+  `resource_metadata=<that URL>`. Not individually mandatory — either mechanism
+  satisfies the spec — but it saves a client two probe round-trips and is the
+  one clients reach for first. It is applied at the outermost handler rather
+  than inside the 401 helper, because most 401s on `/mcp` come from the OAuth
+  library's own token check and never reach charter's code; decorating half of
+  them would be worse than decorating none.
+
+Both documents are built from the configured origin (`CHARTER_GATEWAY_URL`),
+never the request's `Host` — what the gateway says it *is* must not be steerable
+by whoever asks, the same reasoning as registration screening (§4.7). An origin
+that is unset or unusable yields a `500` rather than publishing a guess.
+
+This was a genuine gap, not a formality: nothing served either path, and the
+catch-all answered them `200 charter-gateway`, which a client cannot parse. With
+PRM unreachable there is no fallback — the `/.well-known/oauth-authorization-server`
+path is built from the issuer *inside* the PRM document — so a client's only
+remaining move is the one the spec's own sequence diagram names, "abort or use
+pre-configured values". Unknown paths now `404`.
 
 **Token passthrough is forbidden and we already comply.** The spec requires that
 the token the gateway receives from the client is never forwarded upstream;
@@ -245,6 +295,22 @@ verb returns those (plus a preview) instead of printing them.
 `ponytail:` adopt the standard (reference-in, threshold-linked-out); no bespoke
 blob store, no per-payload special cases.
 
+**What ships until C does: a hard cap and an honest error.** Resource-link-out
+is sub-project C and is not built. The gateway meanwhile caps what it reads back
+from core at **1 MB** (`gateway/src/core.ts`, the same cap the stdio proxy had on
+what may enter a model's context), streaming rather than buffering, and appends
+`...[truncated]`. A truncated body is unparseable JSON, so a 2xx whose body was
+cut is returned with **`isError: true`** — telling the model the call succeeded
+and handing it a broken result is precisely the failure this section argues
+against, so the interim behaviour errs toward a failure the model can act on. It
+is an interim, not a design: a verb whose result can exceed 1 MB is unusable
+through the gateway until it returns a reference instead.
+
+(Ordering note, because it is load-bearing in the other direction too:
+redaction runs *before* the byte cut, over-reading by the longest secret, so a
+credential straddling the cut cannot survive as an unmatched half. Anything that
+adds a later truncation step has to move redaction with it.)
+
 ### 4.6 The actor token across the seam (added 2026-07-25, planning B)
 
 §4.1 says the gateway forwards "a verified Google ID token" and core verifies it.
@@ -266,13 +332,25 @@ adopters (§7.1).
 gateway therefore requests `openid email` **with offline access**, keeps the
 Google **refresh token** in the encrypted OAuth props that
 `@cloudflare/workers-oauth-provider` already persists, and re-mints an ID token when the
-cached one is within a minute of `exp`. The client's own MCP token is unaffected
+one it holds is within a minute of `exp`. The client's own MCP token is unaffected
 — it is the gateway's, on the gateway's lifetime. **Core still verifies Google
 itself, so invariant 1 (§2.1) holds**: the gateway relays an unforgeable token,
 it does not assert identity.
 
-**`charter_connect_hubspot` cannot be ported as-is.** §4.2 said the surface is
-"the four tools minus `charter_login`" — but the HubSpot connect tool is *also* a
+**"Cached" overstates what shipped, in a way that costs something.** The
+re-minted identity is never written back to the OAuth props, so nothing is
+cached: past the one-hour mark *every* request re-mints, paying a Google
+round-trip. The sharper cost is that `google.ts` deliberately adopts a rotated
+`refresh_token` when Google sends one — and discarding the re-mint result throws
+that away, so a rotation leaves the stored token dead and ends the session at
+"sign in again" with no in-place recovery. Google rarely rotates for web
+clients, which is why this is recorded rather than fixed. The write-back needs
+`OAuthProvider`'s `tokenExchangeCallback`. `docs/deployment/gateway.md`'s known
+limitations has carried this correctly; this section did not.
+
+**`charter_connect_hubspot` cannot be ported as-is.** §4.2 originally said the
+surface is "the four tools minus `charter_login`" (it now states the two that
+ship) — but the HubSpot connect tool is *also* a
 local flow: it opens a loopback listener on `127.0.0.1:53682`
 (`charter_mcp.js:36`, `HS_CONNECT_PORT`) and hands the resulting code to the
 `identity.hs.connect` verb. A remote gateway has no loopback. It needs a second
@@ -485,8 +563,14 @@ alternative to an OAuth token and forward it as `X-API-Key` — core already
 accepts both. That is the *only* call on which the gateway may send a key, and
 it is by definition a call with no actor token, so it stays inside §4.1's
 exclusion rather than reopening it. `core.ts`'s `CoreConfig` already carries an
-optional `apiKey` for it; nothing sets it. `ponytail:` don't build it until
-something actually needs it.
+optional `apiKey` for it, and the reference gateway already populates it from an
+optional `CHARTER_API_KEY` Worker secret (`docs/deployment/gateway.md` documents
+that secret and says to leave it unset). What is missing is the *entry point*:
+`apiHandler` returns `401` unless the request carries an OAuth grant, so every
+call that reaches `callCore` has an actor token, and `authHeaders` therefore
+never sends the key. The field is wired and unreachable — which is the safe
+state, but "nothing sets it" was the wrong description of why. `ponytail:` don't
+build it until something actually needs it.
 
 ### 7.2 Non-goals
 - **No cross-tenant.** Single operator, single org (see `distribution.md`).
