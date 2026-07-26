@@ -66,14 +66,25 @@ type Props = { identity: GoogleIdentity };
 function googleConfig(env: Env, gatewayUrl: string): GoogleConfig {
   return {
     clientId: env.GOOGLE_CLIENT_ID,
-    clientSecret: env.GOOGLE_CLIENT_SECRET,
+    // `Env` types this as `string`, but an unset wrangler secret is
+    // `undefined` at runtime. Without the fallback, a misconfigured deploy
+    // sends google.ts a literal `client_secret=undefined` upstream instead of
+    // failing legibly.
+    clientSecret: env.GOOGLE_CLIENT_SECRET ?? "",
     redirectUri: new URL("/callback", gatewayUrl).toString(),
     allowedDomain: env.CHARTER_ALLOWED_DOMAIN,
   };
 }
 
 function coreConfig(env: Env): CoreConfig {
-  return { url: env.CHARTER_CORE_URL, credential: env.CHARTER_CREDENTIAL };
+  return {
+    url: env.CHARTER_CORE_URL,
+    // Same reasoning as clientSecret above: core.ts's scrub() calls
+    // .split(":") on this unconditionally, and an unset CHARTER_CREDENTIAL is
+    // `undefined` despite the `string` type — the fallback turns that into a
+    // clean 401 from core instead of a raw TypeError surfaced to the model.
+    credential: env.CHARTER_CREDENTIAL ?? "",
+  };
 }
 
 // --- the MCP API handler -----------------------------------------------------

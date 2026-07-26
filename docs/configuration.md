@@ -7,7 +7,7 @@ All engine configuration is via environment variables. No config files, no YAML.
 | Variable | Type | Description |
 |---|---|---|
 | `GCP_PROJECT` | string | GCP project ID for BigQuery, Secret Manager, and Cloud Run |
-| `GOOGLE_OAUTH_CLIENT_ID` | string | Google OAuth client ID for actor identity verification |
+| `GOOGLE_OAUTH_CLIENT_ID` | string | Google OAuth client ID for actor identity verification. Once charter-gateway is deployed, this must be the gateway's **Web application** client id, not the Desktop client the old stdio proxy used — see `docs/deployment/gateway.md` step 2 |
 | `ALLOWED_DOMAIN` | string | Email domain suffix allowed for actor sign-in (e.g. `@example.com`) |
 
 ## Optional
