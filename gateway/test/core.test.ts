@@ -220,3 +220,29 @@ describe("callCore", () => {
     }
   });
 });
+
+describe("callCore maxBytes override", () => {
+  it("caps at opts.maxBytes and reports truncation as an error", async () => {
+    const { impl } = fakeFetch(200, "a".repeat(5000));
+    const r = await callCore(impl, CFG, "v.x", {}, { actorToken: "t", maxBytes: 1024 });
+    expect(r.isError).toBe(true);
+    expect(r.text.endsWith("...[truncated]")).toBe(true);
+    expect(new TextEncoder().encode(r.text).length).toBeLessThanOrEqual(1024);
+  });
+
+  it("passes a body under opts.maxBytes through untouched", async () => {
+    const { impl } = fakeFetch(200, "a".repeat(2000));
+    const r = await callCore(impl, CFG, "v.x", {}, { actorToken: "t", maxBytes: 4096 });
+    expect(r.isError).toBe(false);
+    expect(r.text).toBe("a".repeat(2000));
+  });
+
+  it("redacts a secret straddling the override cut (ordering invariant)", async () => {
+    const secret = "SECRETSECRETSECRETSECRET";
+    const body = "a".repeat(1024 - 10) + secret + "b".repeat(200);
+    const { impl } = fakeFetch(200, body);
+    const c = { ...CFG, cfAccessClientSecret: secret };
+    const r = await callCore(impl, c, "v.x", {}, { actorToken: "t", maxBytes: 1024 });
+    expect(r.text).not.toContain(secret.slice(0, 10)); // no unmatched half survives
+  });
+});

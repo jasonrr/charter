@@ -25,8 +25,6 @@ const TRUNCATE_SUFFIX_BYTES = TRUNCATE_SUFFIX.length;
 // bigger than what it replaced. Reserve that much extra so the final,
 // re-encoded result can never land over the cap even in that worst case.
 const UTF8_REPLACEMENT_SLACK = 2;
-const TRUNCATE_BUDGET_BYTES =
-  MAX_RESPONSE_BYTES - TRUNCATE_SUFFIX_BYTES - UTF8_REPLACEMENT_SLACK;
 
 export type CoreConfig = {
   url: string;
@@ -123,6 +121,7 @@ function cutToBytes(text: string, budget: number): string {
 async function readCapped(
   res: Response,
   secrets: (string | undefined)[],
+  maxBytes: number = MAX_RESPONSE_BYTES,
 ): Promise<CappedBody> {
   const body = res.body;
   if (!body) {
@@ -130,7 +129,7 @@ async function readCapped(
     return { text: redact(await res.text(), secrets), truncated: false };
   }
 
-  const readLimit = MAX_RESPONSE_BYTES + redactionMargin(secrets);
+  const readLimit = maxBytes + redactionMargin(secrets);
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
@@ -160,7 +159,7 @@ async function readCapped(
   // `stopped` means there was more body past the read limit; the margin means
   // the read limit can sit above the cap, so an over-cap body that ended
   // inside the margin is a truncation too.
-  const truncated = stopped || total > MAX_RESPONSE_BYTES;
+  const truncated = stopped || total > maxBytes;
 
   const combined = new Uint8Array(total);
   let offset = 0;
@@ -171,7 +170,10 @@ async function readCapped(
 
   // Default (non-fatal) decode: the read limit can land mid-character.
   let text = redact(new TextDecoder("utf-8").decode(combined), secrets);
-  if (truncated) text = cutToBytes(text, TRUNCATE_BUDGET_BYTES) + TRUNCATE_SUFFIX;
+  if (truncated) {
+    const budget = maxBytes - TRUNCATE_SUFFIX_BYTES - UTF8_REPLACEMENT_SLACK;
+    text = cutToBytes(text, budget) + TRUNCATE_SUFFIX;
+  }
   return { text, truncated };
 }
 
@@ -180,7 +182,7 @@ export async function callCore(
   cfg: CoreConfig,
   verb: string,
   args: object,
-  opts: { readOnly?: boolean; actorToken?: string },
+  opts: { readOnly?: boolean; actorToken?: string; maxBytes?: number },
 ): Promise<CoreResult> {
   if (!verb) return { text: "missing 'verb'", isError: true };
 
@@ -229,7 +231,7 @@ export async function callCore(
 
   // Already redacted, and redacted before the byte cut — see readCapped. Do
   // not add a truncation step after this point without moving redaction with it.
-  const { text, truncated } = await readCapped(res, coreSecrets(cfg));
+  const { text, truncated } = await readCapped(res, coreSecrets(cfg), opts.maxBytes);
   if (res.status >= 200 && res.status < 300) {
     // ponytail: `isError: truncated` is an interim fix, not resource-link-out
     // (docs/remote-mcp.md §4.5). Truncated JSON is unparseable, and a 2xx
