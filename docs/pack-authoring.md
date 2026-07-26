@@ -70,6 +70,9 @@ Reference in, reference out (docs/remote-mcp.md §4.5):
   fetch the reference if it needs everything.
 - packtest's 1 MB response-budget check still applies to what you return:
   it keeps a pack honest on deployments that run without a results bucket.
+- `result_ref` is a reserved top-level key in success results. Don't return
+  your own `result_ref` field — the gateway treats that shape as an offload
+  envelope and will hide the real body behind a resource link.
 
 ## The dry_run Convention
 

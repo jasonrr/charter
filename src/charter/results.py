@@ -42,6 +42,8 @@ def store(body_json: str, producer: str, verb: str) -> str:
 def fetch(result_id, producer: str) -> str:
     """Read one stored envelope back, producer-only. 404 result_unknown for
     malformed, missing, expired, and not-yours alike."""
+    if not get_settings().results_bucket:
+        raise VerbError(404, "result_unknown")
     if not isinstance(result_id, str) or not _ID_RE.fullmatch(result_id):
         raise VerbError(404, "result_unknown")
     blob = _bucket().get_blob(f"results/{result_id}")

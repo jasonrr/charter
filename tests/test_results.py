@@ -3,6 +3,7 @@ missing-and-not-yours."""
 import pytest
 
 from charter import results
+from charter import settings as settings_mod
 from charter.errors import VerbError
 
 
@@ -37,6 +38,8 @@ class FakeBucket:
 def bucket(monkeypatch):
     fake = FakeBucket()
     monkeypatch.setattr(results, "_bucket", lambda: fake)
+    monkeypatch.setenv("RESULTS_BUCKET", "test-bucket")
+    settings_mod.get_settings.cache_clear()
     return fake
 
 
@@ -67,3 +70,15 @@ def test_fetch_missing_and_malformed_ids_are_result_unknown(bucket):
         with pytest.raises(VerbError) as e:
             results.fetch(bad, "a@example.com")
         assert e.value.code == "result_unknown"
+
+
+def test_fetch_with_no_results_bucket_is_result_unknown(monkeypatch):
+    monkeypatch.setenv("RESULTS_BUCKET", "")
+    settings_mod.get_settings.cache_clear()
+    monkeypatch.setattr(
+        results, "_bucket",
+        lambda: (_ for _ in ()).throw(AssertionError("must not touch bucket")),
+    )
+    with pytest.raises(VerbError) as e:
+        results.fetch("A" * 24, "a@example.com")
+    assert (e.value.status, e.value.code) == (404, "result_unknown")
