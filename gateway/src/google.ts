@@ -24,6 +24,9 @@ const TOKEN_URL = "https://oauth2.googleapis.com/token";
 /** Re-mint this many seconds before expiry so a call never races the clock. */
 const REFRESH_MARGIN_SECONDS = 60;
 
+/** Cap how much of an upstream error body we echo back so a hostile or oversized response can't be rendered wholesale. */
+const MAX_UPSTREAM_ERROR_CHARS = 500;
+
 export type GoogleConfig = {
   clientId: string;
   clientSecret: string;
@@ -46,13 +49,21 @@ type Claims = {
   aud?: string;
 };
 
+/** The bare domain regardless of whether the config was written with a leading "@". */
+function bareDomain(cfg: GoogleConfig): string {
+  return cfg.allowedDomain.replace(/^@/, "");
+}
+
 export function decodeIdTokenClaims(idToken: string): Claims {
   try {
     const seg = idToken.split(".")[1];
     if (!seg) return {};
     const b64 = seg.replace(/-/g, "+").replace(/_/g, "/");
     const pad = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
-    return JSON.parse(atob(pad)) as Claims;
+    const parsed = JSON.parse(atob(pad));
+    // A payload of `null` (or any non-object) parses without throwing, so guard
+    // explicitly rather than letting a raw TypeError reach the caller later.
+    return parsed && typeof parsed === "object" ? (parsed as Claims) : {};
   } catch {
     return {}; // ponytail: an unreadable token is simply "no claims"; core rejects it anyway
   }
@@ -68,7 +79,7 @@ export function buildAuthorizeUrl(cfg: GoogleConfig, state: string): string {
   // offline + consent are what cause a refresh_token to be issued at all.
   u.searchParams.set("access_type", "offline");
   u.searchParams.set("prompt", "consent");
-  u.searchParams.set("hd", cfg.allowedDomain.replace(/^@/, ""));
+  u.searchParams.set("hd", bareDomain(cfg));
   return u.toString();
 }
 
@@ -91,7 +102,11 @@ async function tokenRequest(
   });
   const text = await res.text();
   if (res.status < 200 || res.status >= 300) {
-    throw new Error(safe(`google token endpoint returned ${res.status}: ${text}`, cfg));
+    const capped =
+      text.length > MAX_UPSTREAM_ERROR_CHARS
+        ? `${text.slice(0, MAX_UPSTREAM_ERROR_CHARS)}…[truncated]`
+        : text;
+    throw new Error(safe(`google token endpoint returned ${res.status}: ${capped}`, cfg));
   }
   try {
     return JSON.parse(text);
@@ -122,9 +137,11 @@ export async function exchangeCode(
       `sign-in rejected: ${email || "that account"} is not a verified account`,
     );
   }
-  if (!email.endsWith(cfg.allowedDomain)) {
+  // "@" makes this an exact domain-boundary match — without it "example.com"
+  // would also accept "notexample.com" (Important 1).
+  if (!email.endsWith(`@${bareDomain(cfg)}`)) {
     throw new Error(
-      `sign-in rejected: charter requires a ${cfg.allowedDomain} account ` +
+      `sign-in rejected: charter requires a @${bareDomain(cfg)} account ` +
         `(got ${email || "no email"}); pick your work account`,
     );
   }
@@ -169,7 +186,17 @@ export async function freshIdToken(
     );
   }
 
-  const idToken: string = body.id_token ?? "";
+  if (!body.id_token) {
+    // No id_token means no fresh token to hand back — surfacing an empty string
+    // here would make core treat X-Actor-Token as absent (a bare "unauthorized")
+    // instead of this actionable message, so fail the same way invalid_grant does.
+    throw new Error(
+      "your Google sign-in is no longer valid — sign in again to charter " +
+        "(refresh response had no id_token)",
+    );
+  }
+
+  const idToken: string = body.id_token;
   const claims = decodeIdTokenClaims(idToken);
   return {
     idToken,
