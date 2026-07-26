@@ -423,3 +423,18 @@ def test_shape_invalid_grants_secret_yields_401_not_500(monkeypatch):
     body, status = _parse(main.bridge(FakeRequest(body={"verb": "sync.status"})))
     assert status == 401
     assert body["error"] == "unauthorized"
+
+
+def test_non_string_allow_element_yields_401_not_500(monkeypatch):
+    # Same shape of hand-edit typo, one level deeper: `[["*"]]` for `["*"]`.
+    # allowed() calls .endswith on each element from OUTSIDE bridge's try block.
+    import charter.grants as grants
+    monkeypatch.setattr(main, "identify", lambda req: None)
+    monkeypatch.setattr(auth, "actor_email", lambda req: "jason@example.com")
+    monkeypatch.setattr(main, "actor_email", lambda req: "jason@example.com")
+    monkeypatch.setattr(grants, "_fetch",
+                        lambda: {"jason@example.com": {"allow": [["*"]]}})
+    grants.reload()
+    body, status = _parse(main.bridge(FakeRequest(body={"verb": "sync.status"})))
+    assert status == 401
+    assert body["error"] == "unauthorized"

@@ -92,8 +92,15 @@ def identify(request):
     rec = _keys().get(digest)
     if rec is None:
         return None
+    allow = rec["allow"]
     return {"name": rec["name"], "interface": rec.get("interface", "unknown"),
-            "allow": rec["allow"], "require_actor": bool(rec.get("require_actor"))}
+            # A COPY: this record is handed to every verb handler, and the list
+            # in it is the cached key map's own list -- a handler appending to it
+            # would widen the key's scope process-wide until the TTL expires.
+            # Copied only when it IS a list: list("data.*") would explode a
+            # malformed string allow into characters (see allowed()).
+            "allow": list(allow) if isinstance(allow, list) else allow,
+            "require_actor": bool(rec.get("require_actor"))}
 
 
 def allowed(caller, verb):
@@ -111,8 +118,14 @@ def allowed(caller, verb):
             p += "*"
         return fnmatchcase(verb, p)
     allow = caller["allow"]
-    if not isinstance(allow, list):
-        return False          # e.g. a JSON string: iterating it would match per-character
+    # Fail closed on a malformed allow-list rather than matching through it. Both
+    # maps are hand-edited secrets: a JSON string would match per-character (any
+    # "*" grants everything) and a non-string element raises out of _match --
+    # this call sits outside bridge()'s try block, so that is a bare 500.
+    if not isinstance(allow, list) or not all(isinstance(p, str) for p in allow):
+        logging.error("charter auth: malformed allow-list for %s -- fail-closed",
+                      caller.get("name"))
+        return False
     return any(_match(p) for p in allow)
 
 

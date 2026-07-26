@@ -102,6 +102,13 @@ def test_allow_as_string_denied_via_auth_allowed():
     assert auth.allowed(caller, "admin.reload_keys") is False
 
 
+def test_allow_with_non_string_element_fails_closed(monkeypatch):
+    # `[["*"]]` is a plausible hand-edit typo for `["*"]`. Every element must be
+    # a string: auth.allowed calls .endswith on each one.
+    _seed(monkeypatch, {"jason@example.com": {"allow": [["*"]]}})
+    assert grants.grants_for("jason@example.com") is None
+
+
 def test_entry_as_list_yields_none(monkeypatch):
     _seed(monkeypatch, {"jason@example.com": ["data.*"]})
     assert grants.grants_for("jason@example.com") is None
@@ -137,3 +144,45 @@ def test_malformed_charter_grants_cold_start_yields_no_scope(monkeypatch):
     monkeypatch.setattr(grants, "_fetch", boom)
     grants.reload()
     assert grants.grants_for("jason@example.com") is None
+
+
+# --- shared allow-list hardening (both identification paths) ------------------
+
+def test_non_string_allow_element_denied_via_auth_allowed():
+    # Belt-and-suspenders for the key path, whose records come from a
+    # separately hand-edited secret: allowed() must deny, not raise
+    # AttributeError out of the dispatcher (an unaudited bare 500).
+    for bad in ([["*"]], [1], [None], [{"*": True}]):
+        caller = {"name": "cron", "interface": "cron", "allow": bad}
+        assert auth.allowed(caller, "admin.reload_keys") is False
+
+
+def test_grants_for_returns_a_copy(monkeypatch):
+    # The caller record is handed to every verb handler; a handler appending to
+    # it must not widen the process-wide cached grants map.
+    _seed(monkeypatch, {"jason@example.com": {"allow": ["data.*"]}})
+    allow = grants.grants_for("jason@example.com")
+    allow.append("*")
+    assert grants.grants_for("jason@example.com") == ["data.*"]
+
+
+def test_identify_returns_a_copy_of_the_key_allow_list(monkeypatch):
+    import hashlib
+    digest = "sha256:" + hashlib.sha256(b"k").hexdigest()
+    cached = {digest: {"name": "cron", "interface": "cron", "allow": ["sync.*"]}}
+    monkeypatch.setattr(auth, "_keys", lambda: cached)
+    rec = auth.identify(_Req({"X-API-Key": "k"}))
+    rec["allow"].append("*")
+    assert auth.identify(_Req({"X-API-Key": "k"}))["allow"] == ["sync.*"]
+
+
+def test_identify_keeps_a_malformed_allow_verbatim(monkeypatch):
+    # Copying must not coerce: list("data.*") would explode a string into
+    # characters, and a "*" character matches every verb in auth.allowed.
+    import hashlib
+    digest = "sha256:" + hashlib.sha256(b"k").hexdigest()
+    monkeypatch.setattr(auth, "_keys",
+                        lambda: {digest: {"name": "cron", "allow": "data.*"}})
+    rec = auth.identify(_Req({"X-API-Key": "k"}))
+    assert rec["allow"] == "data.*"
+    assert auth.allowed(rec, "admin.reload_keys") is False

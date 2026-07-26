@@ -100,11 +100,18 @@ def reload():
 def grants_for(email):
     """Allow-list granted to this email, else None (fail-closed).
 
+    Returns a COPY: the list lives in the process-wide cached map and travels
+    into the caller record every verb handler receives, so handing out the live
+    object lets one handler widen this email's scope for every later request.
+
     Also fails closed (logged, never raised) if the secret is malformed for
-    this email: an entry that isn't an object, or an `allow` that isn't a
-    list. The latter matters beyond a clean error message -- a JSON *string*
-    `allow` would otherwise iterate as characters in auth.allowed, where any
-    "*" character silently matches every verb and escalates to full scope.
+    this email: an entry that isn't an object, an `allow` that isn't a list, or
+    an element of `allow` that isn't a string. The last two matter beyond a
+    clean error message -- a JSON *string* `allow` would otherwise iterate as
+    characters in auth.allowed, where any "*" character silently matches every
+    verb and escalates to full scope, and a non-string element (`[["*"]]`, a
+    plausible typo for `["*"]`) raises out of auth.allowed before bridge()'s
+    try block: a bare 500 with no audit row.
     """
     entry = _map().get(email)
     if entry is None:
@@ -118,4 +125,8 @@ def grants_for(email):
         logging.error("charter grants: allow for %s is a %s, not a list -- fail-closed",
                       email, type(allow).__name__)
         return None
-    return allow
+    if not all(isinstance(p, str) for p in allow):
+        logging.error("charter grants: allow for %s has a non-string element -- fail-closed",
+                      email)
+        return None
+    return list(allow)
