@@ -24,6 +24,7 @@ from charter.actor_auth import actor_email
 from charter.settings import get_settings
 from charter import identity_context
 from charter.identity_verbs import whoami
+from charter import results
 from charter.sdk import VERBS, PREFIXES, register, is_read, target_prefix, summary, _DRY_RUN
 from charter.sdk import loader as _pack_loader
 
@@ -44,7 +45,13 @@ def _reload_keys(body, caller):
 # already allowed to use, so it leaks nothing.
 # (require_actor keys: this ALSO bypasses the actor gate — an agent must be able to inspect
 # its toolbox before a human signs in. Safe: a valid key with no actor leaks nothing new.)
-_ALWAYS_ALLOWED = {"verbs.list"}
+# result.read joins verbs.list: its authorization is OWNERSHIP (only the caller
+# record that produced a result may fetch it — enforced in results.fetch), which
+# is stricter than any grant pattern; requiring a result.* grant would only lock
+# humans out of their own results. Note this also bypasses the require_actor
+# gate below, which is safe for the same reason: a keyless/actorless caller can
+# only ever read what that same caller record produced.
+_ALWAYS_ALLOWED = {"verbs.list", "result.read"}
 
 
 def _can(caller, verb):
@@ -80,6 +87,19 @@ def verbs_list(body, caller):
 register("verbs.list", verbs_list, "post", read=True)
 register("admin.reload_keys", _reload_keys, "post", read=False)
 register("identity.whoami", whoami, "post")
+
+
+def result_read(body, caller):
+    """Fetch a previously offloaded oversized result by id (producer-only). Returns the
+    stored envelope as a JSON string; meant for the gateway's resource fetch, not for
+    inlining into a model's context."""
+    rid_arg = body.get("id")
+    content = results.fetch(rid_arg if isinstance(rid_arg, str) else "", caller["name"])
+    return {"content": content, "mime": "application/json",
+            "target": f"result:{rid_arg[:64] if isinstance(rid_arg, str) else ''}"}
+
+
+register("result.read", result_read, "post", read=True)
 
 # Packs: config-listed modules + allow-listed entry points (default: none).
 _pack_loader.load_packs(get_settings())

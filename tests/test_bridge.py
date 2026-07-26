@@ -329,7 +329,7 @@ def test_verbs_list_filters_to_caller_scope(monkeypatch):
 
 
 def test_verbs_list_always_callable_even_with_no_scope(monkeypatch):
-    assert list(_verbs_list_as(monkeypatch, [])) == ["verbs.list"]
+    assert list(_verbs_list_as(monkeypatch, [])) == ["result.read", "verbs.list"]
 
 
 def test_verbs_list_includes_prefix_family_when_scoped(monkeypatch):
