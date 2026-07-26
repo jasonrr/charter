@@ -413,6 +413,18 @@ const authHandler = {
         true,
       );
 
+      // Deliberately NO Set-Cookie here, and that omission is load-bearing.
+      //
+      // This route will happily re-seal an already-consented state, so `t`
+      // alone could be refreshed in a loop and never expire. What actually
+      // bounds a sign-in is the cookie's Max-Age, written once at /authorize
+      // and never extended — when it lapses, openState fails and no further
+      // re-seal is possible. Total ceiling is roughly two TTLs (~20 min),
+      // drivable only by the browser already holding the cookie.
+      //
+      // Refreshing the cookie here — an obvious-looking kindness for a user who
+      // is slow on the consent screen — silently removes that cap, with nothing
+      // failing to tell you.
       return new Response(null, {
         status: 302,
         headers: {
