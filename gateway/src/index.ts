@@ -29,9 +29,11 @@ import {
 } from "./google.js";
 import {
   handleTool,
+  TOOL_CALL_ANNOTATIONS,
   TOOL_CALL_DESCRIPTION,
   TOOL_CALL_NAME,
   TOOL_INPUT_SHAPE,
+  TOOL_READ_ANNOTATIONS,
   TOOL_READ_DESCRIPTION,
   TOOL_READ_NAME,
 } from "./tools.js";
@@ -113,24 +115,13 @@ function buildServer(env: Env, gatewayUrl: string): McpServer {
     return handleTool(fetch, coreConfig(env), toolName, args, idToken);
   };
 
-  // Annotations are carried over verbatim from the stdio proxy
-  // (plugin/proxy/charter_mcp.js:94 and :126). They are what makes
-  // TOOL_READ_DESCRIPTION's "safe to always-allow" claim machine-readable — a
-  // client can act on readOnlyHint instead of parsing English out of the
-  // description. Read is registered first, as the proxy's own check expects.
-  //
-  // ponytail: these sit here rather than beside the descriptions they belong
-  // with in tools.ts only because tools.ts is closed for review.
+  // Read is registered first, as the proxy's own check expects.
   server.registerTool(
     TOOL_READ_NAME,
     {
       description: TOOL_READ_DESCRIPTION,
       inputSchema: TOOL_INPUT_SHAPE,
-      annotations: {
-        title: "Read charter data (read-only)",
-        readOnlyHint: true,
-        openWorldHint: false,
-      },
+      annotations: TOOL_READ_ANNOTATIONS,
     },
     (a) => run(TOOL_READ_NAME, a),
   );
@@ -139,13 +130,7 @@ function buildServer(env: Env, gatewayUrl: string): McpServer {
     {
       description: TOOL_CALL_DESCRIPTION,
       inputSchema: TOOL_INPUT_SHAPE,
-      annotations: {
-        title: "Call charter verb",
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: false,
-        openWorldHint: true,
-      },
+      annotations: TOOL_CALL_ANNOTATIONS,
     },
     (a) => run(TOOL_CALL_NAME, a),
   );

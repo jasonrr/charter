@@ -14,6 +14,7 @@
  *  - args_path / out_path: they read and write the CLIENT's disk. A remote
  *    server cannot. Large payloads move by reference instead (§4.5).
  */
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { callCore, type CoreConfig } from "./core.js";
 
@@ -47,6 +48,29 @@ export const TOOL_CALL_DESCRIPTION =
   "pass confirm:true for irreversible verbs; hs_identity_required = your HubSpot " +
   "account isn't connected). Large inputs go by reference: pass an id or URI the " +
   "verb dereferences, never a large inline body.";
+
+/**
+ * Annotations, carried over verbatim from the stdio proxy
+ * (plugin/proxy/charter_mcp.js:94 and :126).
+ *
+ * They live beside the descriptions because they say the same thing in the
+ * other register: TOOL_READ_DESCRIPTION tells a human charter_read is "safe to
+ * always-allow", and readOnlyHint is what lets a client act on that claim
+ * without parsing English. Change one, change the other.
+ */
+export const TOOL_READ_ANNOTATIONS: ToolAnnotations = {
+  title: "Read charter data (read-only)",
+  readOnlyHint: true,
+  openWorldHint: false,
+};
+
+export const TOOL_CALL_ANNOTATIONS: ToolAnnotations = {
+  title: "Call charter verb",
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: false,
+  openWorldHint: true,
+};
 
 type ToolResult = {
   content: [{ type: "text"; text: string }];
