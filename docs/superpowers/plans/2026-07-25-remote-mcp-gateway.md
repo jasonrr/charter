@@ -4,9 +4,9 @@
 
 **Goal:** Ship `charter-gateway` — a Cloudflare Worker that serves charter as a remote MCP server over Streamable HTTP, authenticates humans with OAuth federating Google, and translates `tools/call` into charter-core's `{"verb", ...args}` HTTP contract.
 
-**Architecture:** Three pure, dependency-free modules (`core.ts` translation, `google.ts` federation, `tools.ts` MCP surface) that take their I/O as parameters and are unit-testable with plain vitest, plus one thin wiring module (`index.ts`) that composes them with `OAuthProvider` (from `workers-oauth-provider`) and `createMcpHandler` (from `agents/mcp`). The gateway is stateless — no Durable Object — and holds two secrets: the core credential and the Google client secret. Core is unchanged by this sub-project except for one config value (§4.6).
+**Architecture:** Three pure, dependency-free modules (`core.ts` translation, `google.ts` federation, `tools.ts` MCP surface) that take their I/O as parameters and are unit-testable with plain vitest, plus one thin wiring module (`index.ts`) that composes them with `OAuthProvider` (from `@cloudflare/workers-oauth-provider`) and `createMcpHandler` (from `agents/mcp`). The gateway is stateless — no Durable Object — and holds two secrets: the core credential and the Google client secret. Core is unchanged by this sub-project except for one config value (§4.6).
 
-**Tech Stack:** TypeScript, Cloudflare Workers, `wrangler`, `agents` (`createMcpHandler`, `getMcpAuthContext`), `workers-oauth-provider` (`OAuthProvider`), `@modelcontextprotocol/sdk` (`McpServer`), `zod`, `vitest`.
+**Tech Stack:** TypeScript, Cloudflare Workers, `wrangler`, `agents` (`createMcpHandler`, `getMcpAuthContext`), `@cloudflare/workers-oauth-provider` (`OAuthProvider`), `@modelcontextprotocol/sdk` (`McpServer`), `zod`, `vitest`.
 
 This is sub-project B of `docs/remote-mcp.md`. Sub-project A (**grants**) landed 2026-07-25 — core already derives a caller from `X-Actor-Token` + grants, which is the seam this gateway plugs into. Nothing here changes core's authorization logic.
 
@@ -71,7 +71,7 @@ All new code lives in a new top-level `gateway/` directory. It is a separate npm
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
     "agents": "^0.2.0",
-    "workers-oauth-provider": "^0.0.5",
+    "@cloudflare/workers-oauth-provider": "^0.0.5",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -83,7 +83,7 @@ All new code lives in a new top-level `gateway/` directory. It is a separate npm
 }
 ```
 
-Install with `cd gateway && npm install`, then **pin what actually resolved**: run `npm ls --depth=0` and replace each `^`-range above with the exact installed version. The published versions of `agents` and `workers-oauth-provider` move quickly; the plan's ranges are a floor, and the lockfile is the truth. If `npm install` fails to resolve any package, stop and report it — do not substitute a different library.
+Install with `cd gateway && npm install`, then **pin what actually resolved**: run `npm ls --depth=0` and replace each `^`-range above with the exact installed version. The published versions of `agents` and `@cloudflare/workers-oauth-provider` move quickly; the plan's ranges are a floor, and the lockfile is the truth. If `npm install` fails to resolve any package, stop and report it — do not substitute a different library.
 
 `gateway/tsconfig.json`:
 
@@ -648,7 +648,7 @@ Create `gateway/src/google.ts`:
  *     be pointed at that same client id.
  *  2. Freshness. Google ID tokens live about an hour; an MCP session outlives
  *     that. So we ask for offline access, keep the refresh token in the OAuth
- *     props workers-oauth-provider already encrypts, and re-mint on demand.
+ *     props @cloudflare/workers-oauth-provider already encrypts, and re-mint on demand.
  *
  * decodeIdTokenClaims does NOT verify anything — it reads `exp` and `email` for
  * scheduling and display. Core performs the verification that authorizes
@@ -1084,11 +1084,11 @@ Create `gateway/src/index.ts`:
  * Stateless by construction: createMcpHandler in a plain Worker, a fresh
  * McpServer per request. No Durable Object — the gateway keeps no per-session
  * state of its own; the only state is the OAuth grant, which
- * workers-oauth-provider persists (encrypted) in KV.
+ * @cloudflare/workers-oauth-provider persists (encrypted) in KV.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpHandler, getMcpAuthContext } from "agents/mcp";
-import OAuthProvider from "workers-oauth-provider";
+import OAuthProvider from "@cloudflare/workers-oauth-provider";
 
 import { type CoreConfig } from "./core.js";
 import {
@@ -1118,7 +1118,7 @@ export type Env = {
   GOOGLE_CLIENT_SECRET: string;
 };
 
-/** What we persist per grant. workers-oauth-provider encrypts this at rest. */
+/** What we persist per grant. @cloudflare/workers-oauth-provider encrypts this at rest. */
 type Props = { identity: GoogleIdentity };
 
 function googleConfig(env: Env, requestUrl: string): GoogleConfig {
@@ -1184,7 +1184,7 @@ const authHandler = {
     const url = new URL(request.url);
 
     if (url.pathname === "/authorize") {
-      // workers-oauth-provider parsed the client's request; carry it as state so
+      // @cloudflare/workers-oauth-provider parsed the client's request; carry it as state so
       // /callback can complete the grant it belongs to.
       const oauthReq = await (env as any).OAUTH_PROVIDER.parseAuthRequest(request);
       const state = btoa(JSON.stringify(oauthReq));
@@ -1229,7 +1229,7 @@ export default new OAuthProvider({
 - [ ] **Step 2: Typecheck**
 
 Run: `cd gateway && npx tsc --noEmit`
-Expected: no errors. If the installed `workers-oauth-provider` types disagree with the `OAUTH_PROVIDER` helper calls above, follow the installed types — that helper's exact name is the most likely thing to have moved.
+Expected: no errors. If the installed `@cloudflare/workers-oauth-provider` types disagree with the `OAUTH_PROVIDER` helper calls above, follow the installed types — that helper's exact name is the most likely thing to have moved.
 
 - [ ] **Step 3: Confirm the whole suite still passes**
 

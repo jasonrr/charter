@@ -245,7 +245,7 @@ adopters (§7.1).
 **Freshness.** Google ID tokens live ~1 hour; an MCP session outlives that. The
 gateway therefore requests `openid email` **with offline access**, keeps the
 Google **refresh token** in the encrypted OAuth props that
-`workers-oauth-provider` already persists, and re-mints an ID token when the
+`@cloudflare/workers-oauth-provider` already persists, and re-mints an ID token when the
 cached one is within a minute of `exp`. The client's own MCP token is unaffected
 — it is the gateway's, on the gateway's lifetime. **Core still verifies Google
 itself, so invariant 1 (§2.1) holds**: the gateway relays an unforgeable token,
@@ -265,7 +265,7 @@ an unconnected user.
 ## 5. The gateway's reference implementation
 
 **Decided: a Cloudflare Worker running a maintained MCP SDK, with OAuth from a
-maintained library (`workers-oauth-provider`).**
+maintained library (`@cloudflare/workers-oauth-provider`).**
 
 The deciding factor is not the runtime — it's **whose code tracks the spec**.
 Verified 2026-07-25: the **2026-07-28** revision is a *transport rewrite*, not a
