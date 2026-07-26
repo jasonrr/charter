@@ -109,6 +109,29 @@ def _json(obj, status):
     return (_jsonlib.dumps(obj), status, {"Content-Type": "application/json"})
 
 
+def _success(verb, rid, caller, result):
+    """The 200 envelope, offloading oversize bodies to the results store (§4.5).
+
+    Runs AFTER the ok audit row: the verb's outcome is a fact by now, so a dead
+    bucket must not turn a success into an error. Fail-open to the inline body —
+    the gateway's 1 MB cap still bounds what can reach a model's context.
+    result.read is exempt or a fetched blob would just be re-offloaded.
+    """
+    payload = {"ok": True, "verb": verb, "request_id": rid, **result}
+    encoded = _jsonlib.dumps(payload)
+    cfg = get_settings()
+    if (not cfg.results_bucket or verb == "result.read"
+            or len(encoded.encode()) <= cfg.max_inline_bytes):
+        return (encoded, 200, {"Content-Type": "application/json"})
+    try:
+        ref = results.store(encoded, caller["name"], verb)
+    except Exception:
+        return (encoded, 200, {"Content-Type": "application/json"})
+    return _json({"ok": True, "verb": verb, "request_id": rid,
+                  "result_ref": {"id": ref, "bytes": len(encoded.encode()),
+                                 "mime": "application/json"}}, 200)
+
+
 def _target(body):
     """Best-effort audit target from the request body (used before the handler runs).
     Callers may pass an explicit `target`; otherwise fall back through common id keys."""
@@ -233,7 +256,7 @@ def bridge(request):
         outcome = "dry_run" if body.get("dry_run") and verb in _DRY_RUN else "ok"
         record(caller, verb, result.get("target") or target, outcome, rid=rid,
                on_behalf_of=actor, credential=used, detail=audit_detail)  # fail-open
-        return _json({"ok": True, "verb": verb, "request_id": rid, **result}, 200)
+        return _success(verb, rid, caller, result)
     except VerbError as e:                         # structured, audited, mapped HTTP status
         record(caller, verb, target, e.code, rid=rid, detail=e.detail,
                on_behalf_of=actor)
