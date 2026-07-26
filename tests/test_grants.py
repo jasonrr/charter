@@ -180,13 +180,33 @@ def test_identify_returns_a_copy_of_the_key_allow_list(monkeypatch):
     assert auth.identify(_Req({"X-API-Key": "k"}))["allow"] == ["sync.*"]
 
 
-def test_identify_keeps_a_malformed_allow_verbatim(monkeypatch):
-    # Copying must not coerce: list("data.*") would explode a string into
-    # characters, and a "*" character matches every verb in auth.allowed.
+def _identify_with_key_record(monkeypatch, rec):
     import hashlib
     digest = "sha256:" + hashlib.sha256(b"k").hexdigest()
-    monkeypatch.setattr(auth, "_keys",
-                        lambda: {digest: {"name": "cron", "allow": "data.*"}})
-    rec = auth.identify(_Req({"X-API-Key": "k"}))
-    assert rec["allow"] == "data.*"
-    assert auth.allowed(rec, "admin.reload_keys") is False
+    monkeypatch.setattr(auth, "_keys", lambda: {digest: rec})
+    return auth.identify(_Req({"X-API-Key": "k"}))
+
+
+# R2: grants_for validated the record shape; identify() did raw rec["allow"] /
+# rec["name"] on a separately hand-edited secret. Every shape below used to
+# raise KeyError or TypeError out of identify() at main.py's `caller =
+# identify(request)` -- outside bridge()'s try block, so a bare 500 with no
+# audit row and no request_id, on every request bearing that key. Both paths
+# now share secret_map.allow_list.
+@pytest.mark.parametrize("rec", [
+    {"name": "cron", "interface": "cron"},              # `allow` missing
+    ["*"],                                              # entry is a list
+    "data.*",                                           # entry is a string
+    {"name": "cron", "allow": "data.*"},                # allow is a string
+    {"name": "cron", "allow": [["*"]]},                 # allow has a non-string
+    {"interface": "cron", "allow": ["sync.*"]},         # `name` missing
+])
+def test_identify_fails_closed_on_a_malformed_key_record(monkeypatch, rec):
+    assert _identify_with_key_record(monkeypatch, rec) is None
+
+
+def test_identify_still_accepts_a_well_formed_record(monkeypatch):
+    assert _identify_with_key_record(
+        monkeypatch, {"name": "cron", "interface": "cron", "allow": ["sync.*"]}
+    ) == {"name": "cron", "interface": "cron", "allow": ["sync.*"],
+          "require_actor": False}

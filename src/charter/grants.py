@@ -15,7 +15,7 @@ unreachable at boot.
 """
 import logging
 
-from charter.secret_map import SecretMap
+from charter.secret_map import SecretMap, allow_list
 
 # WARNING, not ERROR, on a failed fetch: grants is an optional feature -- a
 # deployment with no charter-grants secret at all would log an ERROR every TTL
@@ -37,28 +37,10 @@ def grants_for(email):
     object lets one handler widen this email's scope for every later request.
 
     Also fails closed (logged, never raised) if the secret is malformed for
-    this email: an entry that isn't an object, an `allow` that isn't a list, or
-    an element of `allow` that isn't a string. The last two matter beyond a
-    clean error message -- a JSON *string* `allow` would otherwise iterate as
-    characters in auth.allowed, where any "*" character silently matches every
-    verb and escalates to full scope, and a non-string element (`[["*"]]`, a
-    plausible typo for `["*"]`) raises out of auth.allowed before bridge()'s
-    try block: a bare 500 with no audit row.
+    this email -- see secret_map.allow_list, shared with the key path, for
+    which shapes and why each one matters.
     """
     entry = _MAP.get().get(email)
     if entry is None:
         return None
-    if not isinstance(entry, dict):
-        logging.error("charter grants: entry for %s is a %s, not an object -- fail-closed",
-                      email, type(entry).__name__)
-        return None
-    allow = entry.get("allow")
-    if not isinstance(allow, list):
-        logging.error("charter grants: allow for %s is a %s, not a list -- fail-closed",
-                      email, type(allow).__name__)
-        return None
-    if not all(isinstance(p, str) for p in allow):
-        logging.error("charter grants: allow for %s has a non-string element -- fail-closed",
-                      email)
-        return None
-    return list(allow)
+    return allow_list(entry, "charter grants", email)

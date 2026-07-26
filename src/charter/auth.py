@@ -16,7 +16,7 @@ import hashlib
 import logging
 from fnmatch import fnmatchcase
 
-from charter.secret_map import SecretMap
+from charter.secret_map import SecretMap, allow_list
 from charter.actor_auth import actor_email
 from charter.grants import grants_for
 
@@ -34,7 +34,15 @@ def reload():
 
 
 def identify(request):
-    """Return the caller record for a valid X-API-Key, else None."""
+    """Return the caller record for a valid X-API-Key, else None.
+
+    Fails closed on a malformed key record rather than raising. This call sits
+    outside bridge()'s try block, so a raw rec["allow"] on a hand-edited secret
+    was a bare 500 -- no audit row, no request_id -- on every request bearing
+    that key. Validation is secret_map.allow_list, the same one grants.py uses:
+    the two maps have the same record shape, and a second copy of the rules is
+    how they diverged in the first place.
+    """
     raw = request.headers.get("X-API-Key", "")
     if not raw:
         return None
@@ -42,14 +50,18 @@ def identify(request):
     rec = _keys().get(digest)
     if rec is None:
         return None
-    allow = rec["allow"]
-    return {"name": rec["name"], "interface": rec.get("interface", "unknown"),
-            # A COPY: this record is handed to every verb handler, and the list
-            # in it is the cached key map's own list -- a handler appending to it
-            # would widen the key's scope process-wide until the TTL expires.
-            # Copied only when it IS a list: list("data.*") would explode a
-            # malformed string allow into characters (see allowed()).
-            "allow": list(allow) if isinstance(allow, list) else allow,
+    # The digest, not the key: it is the map key the operator would grep for,
+    # and it is already a hash of the credential.
+    allow = allow_list(rec, "charter keys", digest)
+    if allow is None:
+        return None
+    name = rec.get("name")
+    if not isinstance(name, str) or not name:
+        logging.error("charter keys: entry %s has no usable name -- fail-closed",
+                      digest)
+        return None
+    return {"name": name, "interface": rec.get("interface", "unknown"),
+            "allow": allow,           # already a copy; see secret_map.allow_list
             "require_actor": bool(rec.get("require_actor"))}
 
 

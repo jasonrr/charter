@@ -106,3 +106,40 @@ class SecretMap:
         """Forget the cached map entirely: the next get() is a cold start."""
         self._map = None
         self._loaded_at = 0.0
+
+
+def allow_list(entry, label, subject):
+    """The validated `allow` from one record of either map, or None (fail-closed).
+
+    Lives here, with the loader, because both maps are hand-edited secrets with
+    the same record shape and neither identification path runs inside bridge()'s
+    try block: an exception raised here is a bare 500 with no audit row, no
+    request_id, and no way for the operator to see which entry is wrong. That
+    happened once already, to auth.identify(), because grants.py grew this
+    validation and the key path kept a raw rec["allow"]. One copy, both paths.
+
+    Three shapes matter beyond a clean error message:
+      * an entry that isn't an object -- ["*"] or "data.*" as the whole record
+      * an `allow` that isn't a list -- a JSON *string* iterates as characters
+        in auth.allowed, where any "*" character silently matches every verb
+      * a non-string element -- [["*"]], a plausible typo for ["*"], raises
+        out of auth.allowed's .endswith
+
+    Returns a COPY: the list lives in the process-wide cached map and travels
+    into the caller record every verb handler receives, so handing out the live
+    object lets one handler widen this subject's scope for every later request.
+    """
+    if not isinstance(entry, dict):
+        logging.error("%s: entry for %s is a %s, not an object -- fail-closed",
+                      label, subject, type(entry).__name__)
+        return None
+    allow = entry.get("allow")
+    if not isinstance(allow, list):
+        logging.error("%s: allow for %s is a %s, not a list -- fail-closed",
+                      label, subject, type(allow).__name__)
+        return None
+    if not all(isinstance(p, str) for p in allow):
+        logging.error("%s: allow for %s has a non-string element -- fail-closed",
+                      label, subject)
+        return None
+    return list(allow)
