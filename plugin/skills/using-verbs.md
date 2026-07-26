@@ -30,7 +30,7 @@ Match on the `error` field:
 - `confirm_required` — pass `confirm:true` for this irreversible verb
 - `bad_deal_id` / `naming_violation` — malformed input
 - `write_in_read_tool` — you sent a write verb through `charter_read` (use `charter_call` instead)
-- `no_grant` / `unauthorized` — your signed-in email has no grant — the deployment operator must add you (see docs/deployment/grants.md)
+- `unauthorized` — your signed-in email has no grant — the deployment operator must add you (see docs/deployment/grants.md)
 
 ## Large Payloads
 

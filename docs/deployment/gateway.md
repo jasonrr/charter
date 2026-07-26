@@ -316,7 +316,7 @@ Ships with the release that removes `plugin/proxy/` (`remote-mcp.md` §7.1).
 In order:
 
 1. Deploy the gateway (runbook steps 1 and 4); full verification of sign-in
-   and grants completes at step 5 below.
+   and grants completes at cutover step 5 below.
 2. Set core's `GOOGLE_OAUTH_CLIENT_ID` to the gateway's Web application
    client id and redeploy core (`remote-mcp.md` §4.6 "Audience"). From this
    moment the old proxy cannot verify actors — expected, there are no
