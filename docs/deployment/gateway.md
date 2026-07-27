@@ -496,19 +496,15 @@ runbook (the top-level config), and staging stays alive as pre-prod.
   today's screen still asks a human to recognise an origin. Not implemented on
   this branch; tracked as follow-up.
 
-- **`index.ts` has no unit tests, so the wiring is verified by curl, not CI.**
-  `gateway/test/` cannot import `src/index.ts`: it pulls in `cloudflare:*`
-  built-ins (through `agents/mcp` and `@cloudflare/workers-oauth-provider`) that
-  plain vitest cannot resolve. Everything with a decision in it was pushed down
-  into a pure module and is tested there — `prm.ts`, `routes.ts`,
-  `gateway_url.ts`, `redirect_uri.ts`, `state.ts`, `core.ts`, `redact.ts`,
-  `google.ts`, `tools.ts`, 142 tests. But their *composition* in `index.ts` is
-  not: the protected-resource route and its CORS preflight, the `404` catch-all,
-  the `resource_metadata` decoration on a `401` from `/mcp`, and the config gate
-  that turns `missingConfig`/`gatewayUrlProblem` into a `503` are all reached
-  only through the Worker. That is exactly why the Verifying section above has a
-  curl for each of them; run them on any deploy that touches `index.ts`. Closing
-  this properly means `@cloudflare/vitest-pool-workers`.
+- **`index.ts` wiring is tested in CI, but keep the deploy-time curls.** The
+  suite runs inside workerd via `@cloudflare/vitest-pool-workers`, so
+  `gateway/test/index.wiring.test.ts` drives the real default export end-to-end
+  — consent required at `/callback`, signature-before-parse, the 401
+  `resource_metadata` decoration — alongside the per-module unit tests
+  (`prm.ts`, `routes.ts`, `gateway_url.ts`, `redirect_uri.ts`, `state.ts`,
+  `core.ts`, `redact.ts`, `google.ts`, `tools.ts`, `results.ts`). The
+  Verifying section's curls remain worth running on every deploy: they check
+  the *deployed* Worker and its config, which no test of the source can.
 
 - **Five moderate `npm audit` advisories are knowingly deferred**, all one
   root cause: a Windows path-traversal issue in `@hono/node-server` (used only
