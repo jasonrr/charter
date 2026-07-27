@@ -53,6 +53,28 @@ expiry — core never deletes.
 Then set `RESULTS_BUCKET=$PROJECT-charter-results` on the service. Leave it
 unset to disable offload (results stay inline; the gateway truncates at 1 MB).
 
+## Staging
+
+A staging core is a second Cloud Run service from the same image — everything
+that must differ is already an env var, so no code or template changes:
+
+- Service name `charter-staging` (copy `deploy/service.yaml`, change
+  `metadata.name`).
+- `GOOGLE_OAUTH_CLIENT_ID` = the **staging** gateway's Web client id
+  (`docs/deployment/gateway.md` "Staging") — this is what keeps staging tokens
+  invalid at production core and vice versa.
+- `KEYS_SECRET_NAME=charter-keys-staging`,
+  `GRANTS_SECRET_NAME=charter-grants-staging`,
+  `AUDIT_TABLE=charter.audit_staging` — staging never reads or writes a
+  production secret or audit row.
+- `RESULTS_BUCKET` unset, or a separate `-staging` bucket with the same
+  lifecycle rule.
+- CF Access is optional for staging, as it is generally: a plain `run.app` URL
+  works because core fails closed on auth, and the staging gateway simply omits
+  the `CF_ACCESS_*` secrets. If you do want tunnel parity, use its own
+  cloudflared tunnel hostname and CF Access application — the staging gateway
+  gets a service token for *that* application, not production's.
+
 ## Docker / Kubernetes
 
 For Docker or K8s, use the same container image. The only runtime requirement

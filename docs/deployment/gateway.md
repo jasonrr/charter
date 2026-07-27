@@ -328,6 +328,37 @@ In order:
 5. Update the installed plugin (`claude plugin install charter@charter`);
    verify per `INSTALL.md` step 7.
 
+## Staging
+
+A staging gateway is a fully parallel deployment — Worker
+`charter-gateway-staging`, its own KV namespace, its own secrets, its own
+Google OAuth client — pointed at a staging core. Nothing is shared with
+production, so a breaking core+gateway change is stood up and verified
+end-to-end (INSTALL step 7) here first.
+
+Keep its config in a **separate, git-ignored** `wrangler.staging.jsonc` beside
+`wrangler.jsonc` (already in `gateway/.gitignore`): a standalone copy of the
+tracked config with `"name": "charter-gateway-staging"` and your real staging
+values filled in. The tracked file stays placeholders — this repo is public,
+and while none of these values are secrets, your deployment's endpoints and
+client id don't belong in it.
+
+The runbook above applies verbatim with three substitutions:
+
+- Every `wrangler` command takes `--config wrangler.staging.jsonc`
+  (`kv namespace create`, `secret put`, `deploy`). Each secret must be `put`
+  again against the staging config — Workers share nothing.
+- Step 1's Google client is a **separate staging Web client** with redirect URI
+  `https://charter-gateway-staging.<account>.workers.dev/callback`. Do not add
+  the staging URI to the production client: core verifies token `aud` against
+  one configured client id, so separate clients make a staging-minted token
+  structurally invalid at production core — that isolation is the point.
+- Steps 2–3 target the staging core service and its `-staging` secrets
+  (`docs/deployment/gcp-cloud-run.md` "Staging"), never production's.
+
+Promotion is not a rename: production is its own first-class run of this
+runbook (the top-level config), and staging stays alive as pre-prod.
+
 ## Known limitations
 
 - **A response over 1 MB comes back as an error, not a partial result.**
