@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyRedirectUri,
+  matchesRegisteredRedirectUri,
   parseExtraOrigins,
   screenRedirectUris,
 } from "../src/redirect_uri.js";
@@ -158,5 +159,51 @@ describe("parseExtraOrigins", () => {
     expect(parseExtraOrigins("not a url, https://ok.example")).toEqual([
       "https://ok.example",
     ]);
+  });
+});
+
+describe("matchesRegisteredRedirectUri", () => {
+  const registered = ["http://localhost:33418/callback"];
+
+  it("matches loopback with a different ephemeral port", () => {
+    expect(
+      matchesRegisteredRedirectUri("http://localhost:53698/callback", registered),
+    ).toBe(true);
+  });
+
+  it("rejects loopback with a different path", () => {
+    expect(
+      matchesRegisteredRedirectUri("http://localhost:53698/other", registered),
+    ).toBe(false);
+  });
+
+  it("rejects a different loopback hostname", () => {
+    expect(
+      matchesRegisteredRedirectUri("http://127.0.0.1:33418/callback", registered),
+    ).toBe(false);
+  });
+
+  it("rejects http against a registered https loopback", () => {
+    expect(
+      matchesRegisteredRedirectUri("http://localhost:1/cb", [
+        "https://localhost:2/cb",
+      ]),
+    ).toBe(false);
+  });
+
+  it("requires exact match for non-loopback URIs", () => {
+    const reg = ["https://vscode.dev/redirect"];
+    expect(matchesRegisteredRedirectUri("https://vscode.dev/redirect", reg)).toBe(
+      true,
+    );
+    expect(
+      matchesRegisteredRedirectUri("https://vscode.dev:444/redirect", reg),
+    ).toBe(false);
+  });
+
+  it("rejects everything against an empty registration", () => {
+    expect(
+      matchesRegisteredRedirectUri("http://localhost:1/cb", []),
+    ).toBe(false);
   });
 });

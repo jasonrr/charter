@@ -105,6 +105,40 @@ export function classifyRedirectUri(
   };
 }
 
+/**
+ * Does a requested redirect URI match one of a client's registered URIs?
+ *
+ * Mirrors @cloudflare/workers-oauth-provider's isValidRedirectUri, which is
+ * what parseAuthRequest applies at /authorize: exact match for ordinary URIs,
+ * but for loopback URIs the port is ignored (RFC 8252 §7.3 — native clients
+ * bind an ephemeral port per sign-in, so the registered port is stale by the
+ * next session). /callback's freshness re-check must use these same semantics;
+ * a stricter exact match there rejects every loopback client whose port
+ * changed since registration, after the user has already passed Google.
+ */
+export function matchesRegisteredRedirectUri(
+  requested: string,
+  registered: string[],
+): boolean {
+  return registered.some((reg) => {
+    try {
+      const req = new URL(requested);
+      const r = new URL(reg);
+      if (isLoopbackHost(req.hostname) && isLoopbackHost(r.hostname)) {
+        return (
+          req.protocol === r.protocol &&
+          req.hostname === r.hostname &&
+          req.pathname === r.pathname &&
+          req.search === r.search
+        );
+      }
+    } catch {
+      return false;
+    }
+    return requested === reg;
+  });
+}
+
 export type Screening = {
   accepted: string[];
   rejected: { uri: string; reason: string }[];

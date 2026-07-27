@@ -42,6 +42,7 @@ import { readResult, RESULT_URI_PREFIX } from "./results.js";
 import { escapeHtml } from "./html.js";
 import { isAuthRoute } from "./routes.js";
 import {
+  matchesRegisteredRedirectUri,
   parseExtraOrigins,
   screenRedirectUris,
 } from "./redirect_uri.js";
@@ -565,7 +566,14 @@ const authHandler = {
         // given, and these keys are derived from grant material.
         return browserError("invalid state", 400);
       }
-      if (!client?.redirectUris.includes(oauthReq.redirectUri)) {
+      // Same semantics as parseAuthRequest's check, not a bare .includes():
+      // loopback URIs match with the port ignored (RFC 8252 §7.3). An exact
+      // comparison here rejected every native client whose ephemeral port
+      // changed since registration — after Google, at the last step.
+      if (
+        !client ||
+        !matchesRegisteredRedirectUri(oauthReq.redirectUri, client.redirectUris)
+      ) {
         return browserError("invalid redirect uri", 400);
       }
 
