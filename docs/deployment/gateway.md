@@ -119,6 +119,9 @@ Set the non-secret values in `wrangler.jsonc` → `vars`:
 - `CHARTER_EXTRA_REDIRECT_ORIGINS` — optional, comma-separated extra https
   origins clients may register redirect URIs on. Empty (closed) by default; see
   "Sign-in is bound to one browser" below before widening it.
+- `CHARTER_CONNECT_PROVIDERS` — optional JSON map of upstream systems a user can
+  connect for act-as writes. Unset (the default) means `/connect/*` 404s. See
+  "Connecting an upstream account" below.
 
 Then the secrets, which are never written to a file:
 
@@ -196,6 +199,68 @@ one unlisted resource template, `charter://result/{id}`, backed by core's
 `result.read` with the caller's actor token — no new secrets, no new state;
 deployments without `RESULTS_BUCKET` on core simply never emit a `result_ref`,
 and the resource surface sits idle.
+
+## Connecting an upstream account (optional)
+
+Signing in tells charter who you are. Acting as you *inside another system* —
+drafting under your name in a CRM, publishing as your account — needs a second,
+separate grant from that system, per person. Getting one needs a browser, and a
+pack running inside core does not have one. `/connect/*` is that browser half.
+
+The contract is `docs/remote-mcp.md` §4.8; this is how to operate it.
+
+Set `CHARTER_CONNECT_PROVIDERS` in `wrangler.jsonc` — a JSON object, not a
+string, so it stays readable and diffable:
+
+    "CHARTER_CONNECT_PROVIDERS": {
+      "hs": {
+        "authorize_url": "https://app.hubspot.com/oauth/authorize",
+        "client_id": "<public client id>",
+        "scopes": "oauth content",
+        "verb": "identity.hs.connect",
+        "label": "HubSpot"
+      }
+    }
+
+Public values only. **The upstream client secret never goes here** — it stays on
+core, where the owning pack does the exchange. The gateway is a courier and
+never sees a token. Some upstreams need an extra authorize parameter to issue a
+refresh token at all (Google: `"authorize_params": {"access_type": "offline",
+"prompt": "consent"}`); parameters the gateway sets itself are refused.
+
+Then two strings have to agree:
+
+1. Register `https://<your-gateway-host>/connect/<id>/callback` as the redirect
+   URI on the upstream's OAuth app.
+2. Set `CHARTER_GATEWAY_URL` on **core** to the same origin as the gateway's.
+   Connect verbs derive both the page users open and the redirect URI they
+   accept from it, so there is one source of truth rather than a per-pack copy.
+
+A user then opens `https://<your-gateway-host>/connect/<id>`, authorizes, and
+gets a page with the tool call that finishes the job. They paste it to their
+client, which spends the code over its already-authenticated session.
+
+Three things to know before you rely on it:
+
+- **The paste is deliberate.** The alternative is the callback calling core
+  itself, which means the gateway holding identity material for a user whose MCP
+  session it is not currently serving — a real secret-at-rest surface traded for
+  one copy-paste.
+- **The gateway cannot tell a pasted code from a phished one.** A user who
+  pastes a code an attacker obtained would bind the attacker's upstream account
+  to their own charter identity. The defence is §4.8 term 5, in the exchanging
+  verb: `charter.sdk.bind_actor`. It is not optional, and a connect verb that
+  skips it accepts grants for other people's accounts.
+- **`wrangler dev` cannot complete a connect.** Sign-in derives its redirect URI
+  from the request, so it works on localhost; connect derives it from
+  `CHARTER_GATEWAY_URL` by design (a Worker answering an unexpected Host must
+  not nominate that Host as where codes are sent). A dev request will therefore
+  redirect the upstream to *production's* callback. Test connect against a
+  deployed staging gateway, not locally.
+
+Misconfiguration is named rather than silent: an unknown provider id is a 404,
+but an id you configured whose entry is malformed returns a 503 saying which
+field is wrong.
 
 ## Verifying
 

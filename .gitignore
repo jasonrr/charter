@@ -9,3 +9,4 @@ build/
 .DS_Store
 .pi-subagents/
 .venv/
+compound-engineering.local.md

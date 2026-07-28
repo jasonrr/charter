@@ -27,6 +27,15 @@
     // loopback and this gateway. Comma-separated; empty means closed.
     // e.g. "https://vscode.dev,https://insiders.vscode.dev" for VS Code's
     // non-loopback fallback. See docs/deployment/gateway.md.
-    "CHARTER_EXTRA_REDIRECT_ORIGINS": ""
+    "CHARTER_EXTRA_REDIRECT_ORIGINS": "",
+    // Upstream systems a user can connect for act-as writes (remote-mcp.md
+    // §4.8). Public values only — the client secret lives on core, which does
+    // the exchange. Empty object means /connect/* 404s. Example:
+    //   "hs": {
+    //     "authorize_url": "https://app.hubspot.com/oauth/authorize",
+    //     "client_id": "<public client id>", "scopes": "oauth content",
+    //     "verb": "identity.hs.connect", "label": "HubSpot"
+    //   }
+    "CHARTER_CONNECT_PROVIDERS": {}
   }
 }

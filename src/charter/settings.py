@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     keys_secret_name: str = "charter-keys"
     grants_secret_name: str = "charter-grants"
     google_refresh_secret_name: str = "charter-google-refresh"
+    # The gateway's canonical origin, e.g. "https://charter.example.com". Core
+    # needs it for act-as connect (docs/remote-mcp.md §4.8 term 1): the connect
+    # page a user is sent to, and the redirect URI a connect verb accepts, are
+    # both derived from it, so the deployment states that origin ONCE instead of
+    # each pack carrying its own copy to drift from. Empty disables connect.
+    charter_gateway_url: str = ""
     audit_table: str = "charter.audit"  # dataset.table, joined with gcp_project
     # §4.5 payload offload: GCS bucket for oversized success envelopes. Empty
     # disables offload (results stay inline; the gateway truncates at 1 MB).

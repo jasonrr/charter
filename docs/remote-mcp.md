@@ -382,10 +382,13 @@ local flow: it opens a loopback listener on `127.0.0.1:53682`
 (`charter_mcp.js:36`, `HS_CONNECT_PORT`) and hands the resulting code to the
 `identity.hs.connect` verb. A remote gateway has no loopback. It needs a second
 federated OAuth flow, hosted at a gateway redirect URI. **Out of scope for B** —
-B ships `charter_read` and `charter_call`, and the HubSpot connect is planned
-separately once B's federation pattern is proven. Verbs that need a HubSpot
-identity return `hs_identity_required` until then, exactly as they do today for
-an unconnected user.
+B ships `charter_read` and `charter_call`, and the connect flow is specified
+separately, once B's federation pattern was proven.
+
+**Resolved (2026-07-28): see §4.8.** The flow is no longer a tool at all. It is
+a pair of gateway routes plus a verb, generic over the upstream, and the
+`hs_identity_required` stopgap above is now the state a user clears by
+connecting rather than a permanent condition.
 
 ### 4.7 Sign-in integrity (added 2026-07-26, after B shipped)
 
@@ -435,6 +438,59 @@ registrant typed and is never verified, so it is the field an attacker uses to
 look like charter. `ponytail:` Client ID Metadata Documents (a `SHOULD` in
 2026-07-28) would let consent show a *verified* name and origin; today's screen
 still asks a human to recognise one. Not implemented; tracked as follow-up.
+
+### 4.8 Upstream connect: acting as the user in someone else's system (added 2026-07-28)
+
+Signing in establishes who the caller is. Acting as them *inside an upstream
+SaaS* — drafting under their name, publishing as their account — needs a second
+grant, from that system, per person. It needs a browser, and a pack running
+inside core does not have one. This is the one capability the gateway provides
+that is not a translation of something core already does, so it is specified
+here rather than only in `docs/deployment/gateway.md` — §4.7's own rule.
+
+Normative for any gateway implementation. All five are MUSTs:
+
+1. **Two routes, derived from one configured origin.** `GET /connect/<id>`
+   starts a flow; `GET /connect/<id>/callback` receives the code. The callback
+   URI MUST be resolved against the deployment's configured gateway origin, not
+   the request's Host, and it is the same string registered on the upstream app
+   and allow-listed in core. Three places, one byte-identical value.
+2. **The gateway holds no upstream secret and performs no token exchange.**
+   Configuration carries an authorize URL, a client id, scopes, and the verb
+   that spends the code — all public. The client secret exists only in core, so
+   a second gateway needs no copy of it. A gateway that exchanges codes is not
+   an implementation of this spec.
+3. **State is browser-bound and provider-scoped.** The same signed, nonce-in-a-
+   `__Host-`-cookie state as §4.7, additionally carrying the provider id, which
+   the callback MUST re-check against its own path. A state sealed for one
+   provider is not spendable at another's callback. It MUST NOT carry §4.7's
+   consent flag, which is what stops a connect state being redeemed as a
+   sign-in grant.
+4. **The authorize redirect MUST set `response_type=code`** (RFC 6749 §4.1.1)
+   and MUST allow per-provider extra parameters — Google issues no refresh
+   token without `access_type=offline&prompt=consent`, so a gateway without
+   that seam supports only upstreams that resemble HubSpot.
+5. **The verb that spends the code MUST bind the upstream principal to the
+   charter actor.** The gateway cannot check this: it never sees the upstream
+   identity, and nothing at its callback distinguishes a genuine paste from a
+   code an attacker obtained and talked a user into pasting. The exchanging
+   verb sees both identities at once and MUST refuse a mismatch. In this
+   implementation that is `charter.sdk.bind_actor`, beside
+   `charter.sdk.allowed_redirect_uri` for term 1 — helpers rather than
+   per-pack copies precisely so the check is greppable.
+
+**The wire contract is `<verb> {"code", "redirect_uri"}`**, rendered for the
+user as a call to the write tool (§4.2). The hand-off page is cosmetic; the verb
+name and those two argument keys are the interface, which is why the reference
+implementation computes them in `connectCall()` and renders them separately.
+
+**Known limits, recorded rather than fixed.** The code is displayed for a human
+to paste, so it crosses a clipboard: the alternative is the gateway holding an
+actor token for a session it is not serving, which is a secret-at-rest surface
+traded for one copy-paste. There is no PKCE on the upstream leg — the verifier
+would have to reach core, which is the same state store the paste avoids — so a
+second implementation that adds `code_challenge` would silently break every
+existing connect verb. If PKCE arrives, it arrives here, for everyone, at once.
 
 ## 5. The gateway's reference implementation
 

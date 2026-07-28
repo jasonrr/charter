@@ -21,6 +21,7 @@ All engine configuration is via environment variables. No config files, no YAML.
 | `CHARTER_GRANTS` | (empty) | Grants JSON, cold-start fallback if Secret Manager is unreachable at boot |
 | `GOOGLE_REFRESH_SECRET_NAME` | `charter-google-refresh` | Secret Manager secret holding Google refresh tokens |
 | `AUDIT_TABLE` | `charter.audit` | BigQuery table for audit logs |
+| `CHARTER_GATEWAY_URL` | (empty) | The gateway's canonical origin. Act-as connect verbs derive both the connect page URL (`<origin>/connect/<id>`) and the redirect URI they will accept (`<origin>/connect/<id>/callback`) from it — see `docs/remote-mcp.md` §4.8. Empty disables connecting an upstream account. Same value as the gateway's own `CHARTER_GATEWAY_URL` |
 | `WAREHOUSE_DATASETS` | (empty) | Comma-separated list of BigQuery datasets exposed by `data.warehouse.*` |
 | `RESULTS_BUCKET` | (empty) | GCS bucket for §4.5 result offload. Empty disables offload: oversized results stay inline and the gateway truncates at 1 MB with an error |
 | `MAX_INLINE_BYTES` | `262144` | Success-envelope size (UTF-8 JSON bytes) above which `bridge()` offloads to `RESULTS_BUCKET` |

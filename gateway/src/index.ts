@@ -42,6 +42,15 @@ import { readResult, RESULT_URI_PREFIX } from "./results.js";
 import { escapeHtml } from "./html.js";
 import { isAuthRoute } from "./routes.js";
 import {
+  callbackUri,
+  handoffPage,
+  isConnectState,
+  parseConnectPath,
+  parseProviders,
+  upstreamAuthorizeUrl,
+  type ConnectState,
+} from "./connect.js";
+import {
   matchesRegisteredRedirectUri,
   parseExtraOrigins,
   screenRedirectUris,
@@ -103,6 +112,16 @@ export type Env = {
    * closed; see redirect_uri.ts for why the default is narrow.
    */
   CHARTER_EXTRA_REDIRECT_ORIGINS?: string;
+  /**
+   * Optional JSON map of upstream systems a user can connect for act-as
+   * writes, e.g.
+   *   {"hs":{"authorize_url":"https://app.hubspot.com/oauth/authorize",
+   *          "client_id":"...","scopes":"oauth content",
+   *          "verb":"identity.hs.connect"}}
+   * Public values only — the client SECRET stays in core, which does the
+   * exchange (connect.ts). Unset means /connect/* 404s.
+   */
+  CHARTER_CONNECT_PROVIDERS?: string;
   /** Not a wrangler binding — OAuthProvider injects this before calling a handler. */
   OAUTH_PROVIDER: OAuthHelpers;
 };
@@ -128,6 +147,19 @@ function missingConfig(env: Env): string[] {
       "CHARTER_GATEWAY_URL",
     ] as const
   ).filter((name) => !env[name]);
+}
+
+/**
+ * The connect routes' own required config — a strict subset of the above.
+ *
+ * They mint the same signed state, and they build the upstream's redirect_uri
+ * out of CHARTER_GATEWAY_URL, but they touch nothing Google. A deployment that
+ * only wants connect should not be told to set GOOGLE_CLIENT_SECRET.
+ */
+function missingConnectConfig(env: Env): string[] {
+  return (["OAUTH_STATE_SECRET", "CHARTER_GATEWAY_URL"] as const).filter(
+    (name) => !env[name],
+  );
 }
 
 /** What we persist per grant. @cloudflare/workers-oauth-provider encrypts this at rest. */
@@ -308,10 +340,14 @@ const apiHandler = {
  * in a browser, and a plain-text content type keeps that from ever being a
  * script sink no matter what a future upstream message contains.
  */
-function browserError(message: string, status: number): Response {
+function browserError(
+  message: string,
+  status: number,
+  extraHeaders: Record<string, string> = {},
+): Response {
   return new Response(message, {
     status,
-    headers: { "Content-Type": "text/plain; charset=utf-8" },
+    headers: { "Content-Type": "text/plain; charset=utf-8", ...extraHeaders },
   });
 }
 
@@ -367,10 +403,15 @@ const authHandler = {
 
     // Fail closed and fail named. In particular there is no unsigned-state
     // fallback: without OAUTH_STATE_SECRET the sign-in routes do not run.
-    const missing = isAuthRoute(url.pathname) ? missingConfig(env) : [];
+    const connectRoute = parseConnectPath(url.pathname);
+    const missing = isAuthRoute(url.pathname)
+      ? missingConfig(env)
+      : connectRoute
+        ? missingConnectConfig(env)
+        : [];
     if (missing.length > 0) {
       return browserError(
-        "charter-gateway is not fully configured; sign-in is disabled.\n\n" +
+        "charter-gateway is not fully configured.\n\n" +
           `Unset: ${missing.join(", ")}\n\n` +
           "See docs/deployment/gateway.md — vars go in wrangler.jsonc, " +
           "secrets are set with `wrangler secret put`.",
@@ -380,7 +421,10 @@ const authHandler = {
 
     // Set but wrong is the quieter failure, and the only place it shows up is
     // here, against the origin a request actually arrived on. See gateway_url.ts.
-    if (isAuthRoute(url.pathname)) {
+    // Both route families mint state and both derive a URI from the configured
+    // origin, so both need the origin check. connectRoute is already computed;
+    // re-deriving it through a predicate would only re-run the same regex.
+    if (isAuthRoute(url.pathname) || connectRoute) {
       const problem = gatewayUrlProblem(
         env.CHARTER_GATEWAY_URL,
         request.url,
@@ -388,7 +432,7 @@ const authHandler = {
       );
       if (problem) {
         return browserError(
-          `charter-gateway is misconfigured; sign-in is disabled.\n\n${problem}\n\n` +
+          `charter-gateway is misconfigured.\n\n${problem}\n\n` +
             "See docs/deployment/gateway.md.",
           503,
         );
@@ -615,6 +659,104 @@ const authHandler = {
         headers: {
           Location: redirectTo,
           "Set-Cookie": clearStateCookie(opened.flow.flowId),
+        },
+      });
+    }
+
+    // Upstream connect (connect.ts): the browser half of act-as. An unknown id
+    // 404s — an enumerable "that provider exists but isn't set up here" tells an
+    // unauthenticated caller about the deployment's integrations for nothing in
+    // return. A *configured but malformed* entry is the opposite case and gets a
+    // named 503: the operator wrote that id, so nothing is disclosed by saying
+    // which field is wrong, and the alternative is a permanent 404 with nothing
+    // to grep (the mistake gateway_url.ts exists to stop repeating).
+    if (connectRoute) {
+      const table = parseProviders(env.CHARTER_CONNECT_PROVIDERS);
+      const provider = table.providers[connectRoute.id];
+      if (!provider) {
+        const why = table.parseError ?? table.rejected[connectRoute.id];
+        if (why) {
+          return browserError(
+            `charter-gateway is misconfigured; this upstream cannot be connected.\n\n` +
+              `CHARTER_CONNECT_PROVIDERS: ${table.parseError ? why : `entry "${connectRoute.id}" is invalid (${why})`}\n\n` +
+              "See docs/deployment/gateway.md.",
+            503,
+          );
+        }
+        return browserError("not found", 404);
+      }
+      const redirectUri = callbackUri(env.CHARTER_GATEWAY_URL, connectRoute.id);
+
+      if (!connectRoute.isCallback) {
+        const flow = mintFlow();
+        // `consented` is left at its default false, and that is load-bearing in
+        // the other direction: it is the only thing stopping this state from
+        // being replayed at /callback, which requires the flag. Passing true
+        // here to mean "the upstream will show its own consent screen" would
+        // hand a connect state a sign-in grant.
+        const state = await sealState(
+          await importStateKey(env.OAUTH_STATE_SECRET),
+          { p: connectRoute.id } satisfies ConnectState,
+          flow,
+          Math.floor(Date.now() / 1000),
+        );
+        return new Response(null, {
+          status: 302,
+          headers: {
+            Location: upstreamAuthorizeUrl(provider, redirectUri, state),
+            "Set-Cookie": setStateCookie(flow),
+          },
+        });
+      }
+
+      // Authenticate the state before reading anything else off this URL.
+      const opened = await openState(
+        await importStateKey(env.OAUTH_STATE_SECRET),
+        url.searchParams.get("state") ?? "",
+        request.headers.get("Cookie"),
+        Math.floor(Date.now() / 1000),
+      );
+      if (!opened.ok) return browserError(opened.reason, 400);
+      // A state signed for one provider must not be spendable at another's
+      // callback: the id decides which authorize URL issued the code, and
+      // crossing them would hand provider A's code to the verb that spends
+      // provider B's. Signed by us is not the same as meant for here.
+      if (!isConnectState(opened.authRequest, connectRoute.id)) {
+        return browserError("invalid state", 400);
+      }
+      // The upstream declining is a normal outcome (the user pressed Cancel),
+      // not a gateway fault — say so without echoing an arbitrary query value
+      // into the page.
+      // Clear the cookie on every terminal branch below, this one included: the
+      // flow is over either way, and a nonce left live is one an abandoned tab
+      // could still spend.
+      const spent = clearStateCookie(opened.flow.flowId);
+      if (url.searchParams.get("error")) {
+        return browserError(
+          "the upstream did not grant access. Nothing was connected; start again when ready.",
+          400,
+          { "Set-Cookie": spent },
+        );
+      }
+      const code = url.searchParams.get("code") ?? "";
+      if (!code) {
+        return browserError("no authorization code returned", 400, { "Set-Cookie": spent });
+      }
+      return new Response(handoffPage(provider, code, redirectUri, TOOL_CALL_NAME), {
+        status: 200,
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Set-Cookie": spent,
+          // The page carries a live authorization code. Keep it out of shared
+          // caches and out of the referrer sent to anything it links to.
+          "Cache-Control": "no-store",
+          "Referrer-Policy": "no-referrer",
+          // Same reasoning as the consent page's: this page's escaping is
+          // load-bearing, so a future edit that adds a script should fail loudly
+          // rather than silently work. No form here, so no form-action.
+          "Content-Security-Policy":
+            "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+          "X-Frame-Options": "DENY",
         },
       });
     }

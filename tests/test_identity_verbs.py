@@ -42,7 +42,11 @@ def test_whoami_with_actor_returns_own_auth_surface(monkeypatch):
     assert body["caller"] == "marketer"
     assert body["actor"] == "sam@example.com"
     assert body["scopes"] == ["*"]
-    assert body["credential_mode"] == "user:sam@example.com"
+    # Deliberately NOT "user:sam@example.com": that is the shape a provider seam
+    # reports when a real per-user UPSTREAM credential was used, and whoami only
+    # ever knew about charter's own sign-in.
+    assert body["actor_mode"] == "actor"
+    assert "credential_mode" not in body
 
 
 def test_whoami_without_actor_is_machine_shape(monkeypatch):
@@ -51,7 +55,7 @@ def test_whoami_without_actor_is_machine_shape(monkeypatch):
     body, status = _parse(main.bridge(FakeRequest(body={"verb": "identity.whoami"})))
     assert status == 200
     assert body["actor"] is None
-    assert body["credential_mode"] == "app"
+    assert body["actor_mode"] == "anonymous"
     assert body["caller"] == "marketer"
     assert body["scopes"] == ["*"]
 

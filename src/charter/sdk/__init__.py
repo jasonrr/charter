@@ -23,6 +23,13 @@ Five primitives:
   get_config()
       The validated Settings object. Pack config values enter through here —
       never ad-hoc os.environ reads.
+  allowed_redirect_uri() / bind_actor()
+      The two checks an act-as connect verb MUST make (docs/remote-mcp.md
+      §4.8): the redirect URI is one this deployment published, and the
+      upstream account being connected is the verified actor themself. They
+      live in the engine, not in each pack, because the second one is the whole
+      security model of the connect flow — a pack that forgets it accepts a
+      grant for somebody else's account.
 
 Handler-result conventions (SDK contract, enforced by the U4 conformance
 suite):
@@ -48,6 +55,7 @@ from decimal import Decimal
 from charter.errors import VerbError
 import charter.identity_context as identity_context
 from charter.settings import get_settings
+from charter.upstream_connect import allowed_redirect_uri, bind_actor
 
 def _safe_deep(v):
     """_safe, recursively: handles nested ARRAY/STRUCT values."""
@@ -60,7 +68,7 @@ def _safe_deep(v):
 
 __all__ = ["VERBS", "PREFIXES", "PackError", "VerbError", "identity_context",
            "get_config", "register", "register_prefix", "is_read", "_safe", "_safe_deep",
-           "summary"]
+           "summary", "allowed_redirect_uri", "bind_actor"]
 
 
 class PackError(Exception):

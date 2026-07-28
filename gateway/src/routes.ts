@@ -15,3 +15,12 @@ const AUTH_ROUTE_PATHS = new Set(["/authorize", "/authorize/continue", "/callbac
 export function isAuthRoute(pathname: string): boolean {
   return AUTH_ROUTE_PATHS.has(pathname);
 }
+
+/**
+ * The connect routes (connect.ts) read `OAUTH_STATE_SECRET` too, and have the
+ * same hazard. They are deliberately NOT listed here: their membership is
+ * derived by `parseConnectPath`, so unlike this hand-maintained set it cannot
+ * go stale, and index.ts already holds that result. A predicate here would only
+ * re-run the same regex — and would invert the layering, since this module is a
+ * dependency-free leaf.
+ */
