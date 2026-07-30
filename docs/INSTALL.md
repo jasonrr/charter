@@ -132,7 +132,9 @@ in yet. Identity comes from the gateway sign-in in Step 7.
 With a placeholder `GCP_PROJECT`, the engine terminal also logs `audit write
 failed … Not found` on each call. That's harmless — auditing fails open, so the
 response is still correct — and it clears once `GCP_PROJECT` points at a real
-project with the audit table.
+project with the audit table (`sql/audit_table.sql` creates it, and is where
+later additive column migrations are recorded —
+`docs/deployment/gcp-cloud-run.md` "Audit table").
 
 For a real deployment (Cloud Run behind Cloudflare Access), see
 `docs/deployment/gcp-cloud-run.md`.

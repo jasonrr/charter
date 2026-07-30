@@ -32,6 +32,21 @@ curl -X POST $(gcloud run services describe charter --region us-central1 --forma
   -d '{"verb": "verbs.list"}'
 ```
 
+## Audit table
+
+`sql/audit_table.sql` creates the dataset and the table `AUDIT_TABLE` names:
+
+    sed "s/PROJECT_ID/$PROJECT/g" sql/audit_table.sql \
+      | bq query --use_legacy_sql=false
+
+That file is also where schema changes are tracked: columns are only ever
+added, and each addition is appended to it as a commented `ALTER TABLE`.
+Upgrading an existing deployment means running the ones added since you last
+did. Order relative to the code deploy doesn't matter in either direction —
+`record()` omits a field it has no value for, so a new binary against an old
+table writes the columns that exist, and an old binary against a new table
+leaves the new one NULL.
+
 ## Results bucket (§4.5 payload offload)
 
 Oversized verb results are offloaded to GCS and fetched back by reference

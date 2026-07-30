@@ -27,12 +27,26 @@ wades through a hundred tool schemas on every call, spending tokens and
 attention picking among them before it does any work. The cost grows with every
 system you add.
 
-Charter's context cost is constant: **four tools, no matter how many verbs or
-systems sit behind them** — `charter_call`, `charter_read`, and two auth
-helpers. The agent discovers verbs on demand by calling `verbs.list` (scoped to
-exactly what its key allows), and the business rules ride inside each verb, so
-the agent doesn't reconstruct — or guess wrong about — how an operation works.
-Less context spent on tool sprawl, fewer wrong turns, more room for the task.
+Charter's context cost is constant: **two tools, no matter how many verbs or
+systems sit behind them** — `charter_call` and `charter_read`. The agent
+discovers verbs on demand by calling `verbs.list` (scoped to exactly what its
+key allows), and the business rules ride inside each verb, so the agent doesn't
+reconstruct — or guess wrong about — how an operation works. Less context spent
+on tool sprawl, fewer wrong turns, more room for the task.
+
+## Stateless by construction
+
+The MCP spec's `2026-07-28` revision removed protocol-level sessions: no
+`Mcp-Session-Id`, no `initialize` handshake, and servers that need cross-call
+state are told to mint explicit handles and pass them as ordinary tool
+arguments.
+
+Charter's gateway was already built that way — a fresh server per request, no
+Durable Object, no per-session state, and oversized results handed back as
+`charter://result/<id>` handles. That was a simplicity decision before it was a
+compliance one: a gateway that holds one credential and translates has nothing
+to keep between calls. It means the revision that gives session-backed
+deployments a migration gives charter nothing to do.
 
 ## Why not the vendor's MCP server?
 
