@@ -95,6 +95,7 @@ export async function handleTool(
   toolName: string,
   args: { verb?: string; args?: Record<string, unknown> },
   actorToken: string,
+  traceparent?: string,
 ): Promise<ToolResult> {
   if (toolName !== TOOL_READ_NAME && toolName !== TOOL_CALL_NAME) {
     return {
@@ -107,7 +108,7 @@ export async function handleTool(
     cfg,
     args.verb ?? "",
     args.args ?? {},
-    { readOnly: toolName === TOOL_READ_NAME, actorToken },
+    { readOnly: toolName === TOOL_READ_NAME, actorToken, traceparent },
   );
   // §4.5 resource-link-out: core offloaded this result; hand the model a
   // reference, not bytes. Only on a clean success — an error body that merely

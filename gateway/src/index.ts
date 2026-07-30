@@ -216,10 +216,23 @@ export function buildServer(env: Env, actorToken: string): McpServer {
   // A fresh server per request: the SDK (>=1.26.0) refuses to reconnect one.
   const server = new McpServer({ name: "charter", version: "0.1.0" });
 
+  // Spec 2026-07-28 documents `traceparent` in `_meta` as the OpenTelemetry
+  // propagation convention (SEP-414). Reading it here is what lets core's audit
+  // row be joined to the caller's own trace; the value is shape-checked in
+  // core.ts before it becomes a header, and again in core before it is stored.
   const run = (
     toolName: string,
     args: { verb: string; args?: Record<string, unknown> },
-  ) => handleTool(fetch, coreConfig(env), toolName, args, actorToken);
+    meta?: Record<string, unknown>,
+  ) =>
+    handleTool(
+      fetch,
+      coreConfig(env),
+      toolName,
+      args,
+      actorToken,
+      typeof meta?.traceparent === "string" ? meta.traceparent : undefined,
+    );
 
   // Read is registered first, as the proxy's own check expects.
   server.registerTool(
@@ -229,7 +242,7 @@ export function buildServer(env: Env, actorToken: string): McpServer {
       inputSchema: TOOL_INPUT_SHAPE,
       annotations: TOOL_READ_ANNOTATIONS,
     },
-    (a) => run(TOOL_READ_NAME, a),
+    (a, extra) => run(TOOL_READ_NAME, a, extra._meta),
   );
   server.registerTool(
     TOOL_CALL_NAME,
@@ -238,7 +251,7 @@ export function buildServer(env: Env, actorToken: string): McpServer {
       inputSchema: TOOL_INPUT_SHAPE,
       annotations: TOOL_CALL_ANNOTATIONS,
     },
-    (a) => run(TOOL_CALL_NAME, a),
+    (a, extra) => run(TOOL_CALL_NAME, a, extra._meta),
   );
 
   // §4.5 resource-link-out: the dereference surface for offloaded results.

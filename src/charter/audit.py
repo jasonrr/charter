@@ -5,12 +5,42 @@ fail-closed. Read/status/draft verbs pass fail_open=True (swallow + log);
 the publish verb's preflight passes fail_open=False so a publish never lands
 without a durable record.
 """
+import contextvars
 import logging
 import datetime
+import re
 
 from google.cloud import bigquery
 
 from charter.settings import get_settings
+
+# W3C traceparent, version 00: "00-<32 hex trace id>-<16 hex span id>-<2 hex flags>".
+# Matched strictly, and an all-zero trace or span id is invalid per the spec.
+_TRACEPARENT_RE = re.compile(r"\A00-(?!0{32}-)[0-9a-f]{32}-(?!0{16}-)[0-9a-f]{16}-[0-9a-f]{2}\Z")
+
+_TRACE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "charter_traceparent", default=None)
+
+
+def begin_trace(traceparent):
+    """Record this request's inbound W3C trace context (dispatcher only).
+
+    Called unconditionally once per request, like identity_context.begin() and
+    for the same reason: thread pools reuse threads, so a value left over from
+    the previous request would otherwise be attributed to this one.
+
+    The value arrives from the caller, so it is validated rather than stored as
+    given -- anything that is not a well-formed traceparent is dropped. Same
+    argument as _bounded_verb in main.py: an audit row is evidence, not a place
+    a caller gets to park arbitrary text.
+
+    Non-strings are dropped rather than matched, for _bounded_verb's other
+    reason: a front end that is not the reference gateway may hand this
+    straight off a JSON body, where it can be an object or an array, and
+    re.match on one raises.
+    """
+    ok = isinstance(traceparent, str) and _TRACEPARENT_RE.match(traceparent)
+    _TRACE.set(traceparent if ok else None)
 
 
 def _client():
@@ -60,6 +90,12 @@ def record(caller, verb, target, result, rid, detail=None, fail_open=True,
         # Same omitted-when-unset pattern: which credential a provider seam actually
         # used ("user:<email>" or "app"), absent for verbs no provider seam touched.
         row["credential"] = credential
+    traceparent = _TRACE.get()
+    if traceparent:
+        # Read from context rather than threaded through record()'s ~15 call sites:
+        # it is one value fixed for the whole request, and every caller would pass
+        # the same thing. Same omitted-when-unset pattern as the two above.
+        row["traceparent"] = traceparent
     try:
         errors = _client().insert_rows_json(_table(), [row])
         if errors:

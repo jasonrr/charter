@@ -177,12 +177,25 @@ async function readCapped(
   return { text, truncated };
 }
 
+/**
+ * W3C traceparent, version 00: `00-<32 hex trace id>-<16 hex span id>-<2 hex flags>`.
+ * All-zero trace or span ids are invalid per the spec. Core applies the same
+ * rule again before writing the value — this copy stops a malformed one
+ * becoming a header, not a trusted one becoming a row.
+ */
+const TRACEPARENT = /^00-(?!0{32}-)[0-9a-f]{32}-(?!0{16}-)[0-9a-f]{16}-[0-9a-f]{2}$/;
+
 export async function callCore(
   fetchImpl: typeof fetch,
   cfg: CoreConfig,
   verb: string,
   args: object,
-  opts: { readOnly?: boolean; actorToken?: string; maxBytes?: number },
+  opts: {
+    readOnly?: boolean;
+    actorToken?: string;
+    maxBytes?: number;
+    traceparent?: string;
+  },
 ): Promise<CoreResult> {
   if (!verb) return { text: "missing 'verb'", isError: true };
 
@@ -206,6 +219,13 @@ export async function callCore(
     "User-Agent": cfg.userAgent ?? "charter-gateway/0.1",
     ...authHeaders(cfg, opts.actorToken),
   };
+  // W3C trace context, forwarded so core's audit row joins the caller's trace.
+  // Shape-checked first: this value came off the client's `_meta`, and an
+  // arbitrary string here is at best a header fetch() throws on and at worst
+  // something a caller chose to write into the audit log.
+  if (opts.traceparent && TRACEPARENT.test(opts.traceparent)) {
+    headers["traceparent"] = opts.traceparent;
+  }
 
   const payload = JSON.stringify({
     ...args,

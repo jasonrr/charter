@@ -18,7 +18,7 @@ import functions_framework
 
 from charter.auth import identify, identify_by_actor, allowed, reload as reload_keys
 from charter.grants import grants_for, reload as reload_grants
-from charter.audit import record
+from charter.audit import begin_trace, record
 from charter.errors import VerbError
 from charter.actor_auth import actor_email
 from charter.settings import get_settings
@@ -183,6 +183,11 @@ def _bounded_verb(verb):
 @functions_framework.http
 def bridge(request):
     rid = str(uuid4())
+    # Before the first record() below can run. `rid` identifies this call inside
+    # charter; the traceparent is what joins it to the caller's own trace, which
+    # is the only way an operator gets from a slow tool call in their client to
+    # the audit row it produced. Unconditional: see begin_trace's docstring.
+    begin_trace(request.headers.get("traceparent"))
     body = request.get_json(silent=True) or {}
     verb = body.get("verb", "")
     target = _target(body)                     # computed once; reused by every branch

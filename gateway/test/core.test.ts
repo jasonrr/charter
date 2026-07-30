@@ -83,6 +83,47 @@ describe("callCore", () => {
     expect("X-Actor-Token" in (seen[0].init.headers as object)).toBe(false);
   });
 
+  // SEP-414: `traceparent` rides in the client's `_meta` and is forwarded so
+  // core's audit row joins the caller's trace. It is caller-controlled, so the
+  // shape check matters more than the happy path.
+  describe("traceparent forwarding", () => {
+    const GOOD = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+
+    async function headersFor(traceparent?: string) {
+      const { impl, seen } = fakeFetch(200, "{}");
+      await callCore(impl, CFG, "v", {}, { traceparent });
+      return seen[0].init.headers as Record<string, string>;
+    }
+
+    it("forwards a well-formed traceparent", async () => {
+      expect((await headersFor(GOOD)).traceparent).toBe(GOOD);
+    });
+
+    it("sends no header when there is no traceparent", async () => {
+      expect((await headersFor()).traceparent).toBeUndefined();
+    });
+
+    it("drops anything that is not a version-00 traceparent", async () => {
+      const bad = [
+        "garbage",
+        // Header injection: a raw CRLF here is what fetch() throws on.
+        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\nX-API-Key: stolen",
+        // All-zero trace id and all-zero span id are invalid per the W3C spec.
+        "00-00000000000000000000000000000000-00f067aa0ba902b7-01",
+        "00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01",
+        // Right shape, wrong lengths / non-hex / unsupported version.
+        "00-4bf92f3577b34da6a3ce929d0e0e47-00f067aa0ba902b7-01",
+        "00-4bf92f3577b34da6a3ce929d0e0e473g-00f067aa0ba902b7-01",
+        "01-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        ` ${GOOD}`,
+        `${GOOD} `,
+      ];
+      for (const value of bad) {
+        expect((await headersFor(value)).traceparent, value).toBeUndefined();
+      }
+    });
+  });
+
   it("reports a non-2xx as an error carrying status and body", async () => {
     const { impl } = fakeFetch(403, '{"ok":false,"error":"denied"}');
     const r = await callCore(impl, CFG, "content.publish", {}, {});

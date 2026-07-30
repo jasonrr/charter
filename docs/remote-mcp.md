@@ -626,6 +626,16 @@ with core is "present a valid Google ID token, through the tunnel, with no
 grants (§2.1, §4.1) — the no-key half is what makes that sentence true rather
 than aspirational.
 
+One optional header rides alongside, added 2026-07-29: `traceparent`, taken
+from the MCP request's `_meta` per SEP-414's OpenTelemetry convention and
+written to the audit row, so a call in someone's client can be joined to the
+row it produced. It carries no authority and core ignores it for every purpose
+except that column. Both ends shape-check it against the W3C version-00 grammar
+before it becomes a header and again before it becomes a row — it is a
+caller-supplied string, and an audit row is evidence, not somewhere a caller
+gets to park text. A second gateway implementation MAY forward it and MUST
+apply the same check if it does.
+
 **Sequencing:** A is shippable now and de-risks everything (it's the auth model),
 and it is pure core work — unaffected by any MCP spec churn. **A landed
 2026-07-25.** **B landed 2026-07-25** — *not* gated on 2026-07-28, which is a

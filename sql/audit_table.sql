@@ -10,9 +10,11 @@ CREATE TABLE IF NOT EXISTS `PROJECT_ID.charter.audit` (
   detail        STRING,
   request_id    STRING,
   on_behalf_of  STRING,  -- verified human behind the caller key; NULL for machine callers
-  credential    STRING   -- which credential a provider seam used ("user:<email>" or "app")
+  credential    STRING,  -- which credential a provider seam used ("user:<email>" or "app")
+  traceparent   STRING   -- W3C trace context from the caller, joins this row to their trace
 );
 
 -- Existing deployments (one-time, additive — run before or after deploy, order-safe):
 -- ALTER TABLE `PROJECT_ID.charter.audit` ADD COLUMN on_behalf_of STRING;
 -- ALTER TABLE `PROJECT_ID.charter.audit` ADD COLUMN credential STRING;
+-- ALTER TABLE `PROJECT_ID.charter.audit` ADD COLUMN traceparent STRING;
