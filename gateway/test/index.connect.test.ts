@@ -202,6 +202,62 @@ describe("/connect/<id>/callback", () => {
     });
     expect(res.status).toBe(400);
   });
+
+  // RFC 9207. The three negative-space cases matter as much as the positive
+  // one: `iss` is only a SHOULD upstream, so absent must stay acceptable, and
+  // an operator who has not configured an issuer has recorded nothing to
+  // compare against.
+  describe("issuer check (RFC 9207)", () => {
+    const WITH_ISSUER = JSON.stringify({
+      hs: {
+        authorize_url: "https://app.hubspot.com/oauth/authorize",
+        client_id: "cid-123",
+        scopes: "oauth content",
+        verb: "identity.hs.connect",
+        issuer: "https://app.hubspot.com",
+      },
+    });
+
+    async function callbackWith(env: Env, query: string) {
+      const { state, cookie } = await startConnect(env);
+      return call(
+        env,
+        `/connect/hs/callback?code=THE_CODE&state=${encodeURIComponent(state)}${query}`,
+        { headers: { Cookie: cookie } },
+      );
+    }
+
+    it("refuses a code whose iss is not the configured issuer, and spends the cookie", async () => {
+      const env = fullEnv({ CHARTER_CONNECT_PROVIDERS: WITH_ISSUER });
+      const res = await callbackWith(env, "&iss=https://evil.example");
+      expect(res.status).toBe(400);
+      expect(res.headers.get("Set-Cookie")).toMatch(/Max-Age=0/);
+      const body = await res.text();
+      expect(body).toContain("invalid issuer");
+      // The whole point: the code never reaches the hand-off page.
+      expect(body).not.toContain("THE_CODE");
+    });
+
+    it("accepts the matching iss", async () => {
+      const env = fullEnv({ CHARTER_CONNECT_PROVIDERS: WITH_ISSUER });
+      const res = await callbackWith(env, "&iss=https://app.hubspot.com");
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("THE_CODE");
+    });
+
+    it("accepts an omitted iss — upstreams only SHOULD send one", async () => {
+      const env = fullEnv({ CHARTER_CONNECT_PROVIDERS: WITH_ISSUER });
+      const res = await callbackWith(env, "");
+      expect(res.status).toBe(200);
+    });
+
+    it("ignores iss entirely when the provider has no configured issuer", async () => {
+      // The default PROVIDERS table has no `issuer`, so there is nothing
+      // recorded to validate against and the check must not invent one.
+      const res = await callbackWith(fullEnv(), "&iss=https://anything.example");
+      expect(res.status).toBe(200);
+    });
+  });
 });
 
 describe("connect state cannot become a sign-in grant", () => {

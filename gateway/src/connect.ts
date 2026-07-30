@@ -63,6 +63,18 @@ export type ConnectProvider = {
   /** Shown to the user on the consent hand-off; defaults to the id at parse time. */
   label: string;
   /**
+   * The upstream's issuer identifier, if it implements RFC 9207 — e.g.
+   * "https://accounts.google.com". When set, a callback carrying an `iss` that
+   * is not this value is refused (spec 2026-07-28 / SEP-2468).
+   *
+   * Optional because most upstreams do not send `iss` yet and an unset one is
+   * indistinguishable from a wrong one at the callback. This table is the
+   * multi-authorization-server case RFC 9207 was written for, though — a code
+   * from provider A arriving at provider B's callback — so the check is worth
+   * having for the upstreams that do send it.
+   */
+  issuer?: string;
+  /**
    * Extra query parameters for the authorize redirect, for upstreams that need
    * one to issue a refresh token at all — Google wants
    * `access_type=offline&prompt=consent`, and without a seam for it this module
@@ -150,8 +162,15 @@ export function parseProviders(raw: unknown): ProviderTable {
     }
     // Destructured so the typeof checks narrow: reading through an index
     // signature would leave every field `unknown` at the construction below.
-    const { authorize_url, client_id, scopes, verb, label, authorize_params } =
-      value as Record<string, unknown>;
+    const {
+      authorize_url,
+      client_id,
+      scopes,
+      verb,
+      label,
+      authorize_params,
+      issuer,
+    } = value as Record<string, unknown>;
     if (typeof authorize_url !== "string" || !authorize_url.startsWith("https://")) {
       table.rejected[id] = "authorize_url";
       continue;
@@ -166,6 +185,12 @@ export function parseProviders(raw: unknown): ProviderTable {
     }
     if (typeof verb !== "string" || verb === "") {
       table.rejected[id] = "verb";
+      continue;
+    }
+    // Present-but-wrong is rejected rather than dropped: a typo'd issuer would
+    // otherwise silently disable the check it was written to turn on.
+    if (issuer !== undefined && (typeof issuer !== "string" || !issuer.startsWith("https://"))) {
+      table.rejected[id] = "issuer";
       continue;
     }
     let extra: Record<string, string> | undefined;
@@ -194,6 +219,7 @@ export function parseProviders(raw: unknown): ProviderTable {
       scopes,
       verb,
       label: typeof label === "string" && label !== "" ? label : id,
+      ...(issuer !== undefined ? { issuer: issuer as string } : {}),
       ...(extra ? { authorize_params: extra } : {}),
     };
   }

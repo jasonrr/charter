@@ -22,6 +22,14 @@ import { redact } from "./redact.js";
 const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 
+/**
+ * Google's issuer identifier (RFC 9207 `iss`), which is neither of the URLs
+ * above — it is the `issuer` field of Google's discovery document, and the
+ * value in every Google ID token's `iss` claim. /callback compares a returned
+ * `iss` against this before spending the code.
+ */
+export const GOOGLE_ISSUER = "https://accounts.google.com";
+
 /** Re-mint this many seconds before expiry so a call never races the clock. */
 const REFRESH_MARGIN_SECONDS = 60;
 

@@ -102,6 +102,10 @@ describe("parseProviders", () => {
       [{ ...HS_CONFIG, verb: "" }, "verb"],
       [{ ...HS_CONFIG, authorize_url: "http://app.hubspot.com/x" }, "authorize_url"],
       [{ ...HS_CONFIG, scopes: 42 }, "scopes"],
+      // Rejected rather than dropped: a typo here silently disables the RFC 9207
+      // check the operator was trying to switch on.
+      [{ ...HS_CONFIG, issuer: "app.hubspot.com" }, "issuer"],
+      [{ ...HS_CONFIG, issuer: 42 }, "issuer"],
       ["not-an-object", "not an object"],
     ];
     for (const [bad, reason] of cases) {
@@ -109,6 +113,15 @@ describe("parseProviders", () => {
       expect(t.providers.hs, JSON.stringify(bad)).toBeUndefined();
       expect(t.rejected.hs, JSON.stringify(bad)).toBe(reason);
     }
+  });
+
+  it("carries an issuer through when set, and omits it when not", () => {
+    const t = parseProviders({
+      with: { ...HS_CONFIG, issuer: "https://app.hubspot.com" },
+      without: HS_CONFIG,
+    });
+    expect(t.providers.with.issuer).toBe("https://app.hubspot.com");
+    expect(t.providers.without.issuer).toBeUndefined();
   });
 
   it("keeps the good entries alongside a bad one", () => {

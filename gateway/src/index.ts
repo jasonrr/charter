@@ -25,6 +25,7 @@ import {
   buildAuthorizeUrl,
   exchangeCode,
   freshIdToken,
+  GOOGLE_ISSUER,
   type GoogleConfig,
   type GoogleIdentity,
 } from "./google.js";
@@ -51,6 +52,7 @@ import {
   type ConnectState,
 } from "./connect.js";
 import {
+  classifyRedirectUri,
   matchesRegisteredRedirectUri,
   parseExtraOrigins,
   screenRedirectUris,
@@ -397,6 +399,29 @@ charter.</p>
 </body></html>`;
 }
 
+/**
+ * RFC 9207 / SEP-2468: a client MUST validate a *present* `iss` on an
+ * authorization response against the issuer it recorded, before redeeming the
+ * code. The gateway is a client twice over — of Google at /callback, and of
+ * each configured upstream at /connect/<id>/callback.
+ *
+ * Absent is not a failure. Emitting `iss` is only a SHOULD on the authorization
+ * server, so rejecting a response that omits it would break every upstream that
+ * has not adopted the parameter — which today is most of them. The defence this
+ * adds is against a *wrong* issuer, i.e. a code minted by one authorization
+ * server being walked into another's callback.
+ *
+ * `expected` may be undefined for an upstream with no configured issuer; with
+ * nothing recorded there is nothing to validate against, so the check is a
+ * no-op rather than a guess.
+ */
+export function issuerMismatch(
+  returned: string | null,
+  expected: string | undefined,
+): boolean {
+  return returned !== null && expected !== undefined && returned !== expected;
+}
+
 const authHandler = {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -448,6 +473,36 @@ const authHandler = {
         // client's request. We sign it and bind it to this browser before
         // handing it to Google — see state.ts for why both halves are needed.
         const authRequest = await env.OAUTH_PROVIDER.parseAuthRequest(request);
+
+        // The confused-deputy control, applied where every client passes
+        // regardless of how it got its client_id.
+        //
+        // screenRegistration is not enough on its own any more: it gates
+        // /register, and a CIMD client never goes through /register — it names
+        // an https URL as its client_id and the provider fetches redirect_uris
+        // from whatever document is there. Without this, an attacker hosting a
+        // metadata document pointing at their own server gets exactly the
+        // attack redirect_uri.ts exists to prevent, having simply skipped the
+        // route that screens for it.
+        //
+        // For a DCR client this is a re-check of what registration already
+        // allowed, and cheap — the same freshness argument /callback makes.
+        const verdict = classifyRedirectUri(
+          authRequest.redirectUri,
+          gatewayOrigin(env.CHARTER_GATEWAY_URL) ?? "",
+          parseExtraOrigins(env.CHARTER_EXTRA_REDIRECT_ORIGINS),
+        );
+        if (!verdict.allowed) {
+          return browserError(
+            "charter will not send an authorization code to this client's " +
+              `redirect_uri.\n\nIt ${verdict.reason}.\n\n` +
+              "This is the control that stops a code being delivered to " +
+              "someone other than you; it is not a misconfiguration you can " +
+              "work around from the client.",
+            400,
+          );
+        }
+
         // The origin, not client_name: the name is whatever the registrant
         // typed and is never verified, so it is the one field an attacker would
         // use to look legitimate. The origin is where the authorization code
@@ -621,6 +676,12 @@ const authHandler = {
         return browserError("invalid redirect uri", 400);
       }
 
+      // Before the code is spent: this response claims to come from Google, so
+      // if it names an issuer at all it has to name Google's.
+      if (issuerMismatch(url.searchParams.get("iss"), GOOGLE_ISSUER)) {
+        return browserError("invalid issuer", 400);
+      }
+
       const code = url.searchParams.get("code") ?? "";
       let identity: GoogleIdentity;
       try {
@@ -651,13 +712,23 @@ const authHandler = {
           400,
         );
       }
+      // The other half of RFC 9207: charter is the authorization server for the
+      // MCP client it is answering, so tell that client which issuer this
+      // response came from. The value has to be the one the client recorded from
+      // our metadata, and @cloudflare/workers-oauth-provider builds that from
+      // the request's own origin (`new URL(tokenEndpoint).origin`) — so this
+      // derives it the same way rather than from CHARTER_GATEWAY_URL, which
+      // would mismatch for a client that discovered us on an extra origin.
+      const issued = new URL(redirectTo);
+      issued.searchParams.set("iss", url.origin);
+
       // Clear this flow's cookie on the way out: it is spent, and should not be
       // able to authenticate a second state. Any other flow's cookie is left
       // alone — that is the point of the per-flow name.
       return new Response(null, {
         status: 302,
         headers: {
-          Location: redirectTo,
+          Location: issued.toString(),
           "Set-Cookie": clearStateCookie(opened.flow.flowId),
         },
       });
@@ -738,6 +809,11 @@ const authHandler = {
           { "Set-Cookie": spent },
         );
       }
+      // Same check as the Google leg, against this provider's configured issuer
+      // — skipped when the operator has not set one (see ConnectProvider.issuer).
+      if (issuerMismatch(url.searchParams.get("iss"), provider.issuer)) {
+        return browserError("invalid issuer", 400, { "Set-Cookie": spent });
+      }
       const code = url.searchParams.get("code") ?? "";
       if (!code) {
         return browserError("no authorization code returned", 400, { "Set-Cookie": spent });
@@ -796,6 +872,18 @@ const provider = new OAuthProvider({
   // before that there was no hook, which is why the runbook documented this
   // as offered-not-required.
   allowPlainPKCE: false,
+  // Client ID Metadata Documents: a client_id that is an https URL resolves to
+  // a JSON document describing the client, instead of the client POSTing itself
+  // to /register. Spec 2026-07-28 deprecates Dynamic Client Registration in
+  // favour of this; /register stays for authorization servers and clients that
+  // have not moved.
+  //
+  // Enabling it opens a second way in that screenRegistration cannot see — a
+  // CIMD client never registers, so its redirect_uris arrive from a document
+  // the gateway merely fetched. The redirect-URI policy is therefore enforced
+  // again at /authorize, where both kinds of client meet. Do not remove that
+  // check while this is true.
+  clientIdMetadataDocumentEnabled: true,
 });
 
 function oauthError(error: string, description: string, status: number): Response {

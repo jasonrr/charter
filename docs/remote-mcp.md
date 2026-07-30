@@ -528,6 +528,21 @@ point release.
   publish `code_challenge_methods_supported`; RFC 9207 `iss` (SHOULD); DCR
   deprecated in favor of Client ID Metadata Documents (SHOULD).
 
+  **Both of those landed 2026-07-29**, and neither needed the SDK upgrade —
+  they sit in the OAuth layer, not the transport. RFC 9207: the gateway now
+  refuses a `/callback` or `/connect/<id>/callback` whose `iss` names an issuer
+  other than the recorded one, and names itself as `iss` on the redirect back
+  to the client. A *missing* `iss` stays acceptable — emitting it is only a
+  SHOULD upstream, so rejecting its absence would break most real providers;
+  the check is against a *wrong* issuer. CIMD: enabled behind
+  `global_fetch_strictly_public`, with the redirect-URI screening moved to
+  `/authorize` so it covers CIMD clients, which never touch `POST /register`
+  and would otherwise skip it entirely (see `docs/deployment/gateway.md`).
+
+  `application_type` (SEP-837) is deliberately not implemented: its MUST is on
+  clients, and the spec says non-OIDC authorization servers safely ignore the
+  parameter. Charter is one.
+
   **PKCE `S256` is enforced (2026-07-26).** Earlier versions of
   `@cloudflare/workers-oauth-provider` hard-coded
   `code_challenge_methods_supported: ["plain", "S256"]` and treated PKCE as

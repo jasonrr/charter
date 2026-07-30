@@ -2,7 +2,12 @@
   "name": "charter-gateway",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-01",
-  "compatibility_flags": ["nodejs_compat"],
+  // global_fetch_strictly_public is what makes Client ID Metadata Documents
+  // safe to enable: a CIMD client_id is a URL the gateway fetches, and without
+  // this flag that fetch could reach this Worker's own private routes and
+  // Cloudflare-internal addresses (SSRF). The OAuth provider refuses to do CIMD
+  // at all unless the flag is set.
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "kv_namespaces": [
     { "binding": "OAUTH_KV", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }
   ],

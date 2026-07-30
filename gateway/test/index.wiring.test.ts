@@ -171,11 +171,159 @@ describe("/callback wiring order", () => {
     expect(res.status).toBe(403);
   });
 
+  // RFC 9207. The existing test above is the "no iss at all" case — it reaches
+  // the exchange — so only the two iss-bearing cases are new here.
+  it("refuses a callback naming an issuer that is not Google — before any Google call", async () => {
+    const env = fullEnv();
+    const { state, cookie } = await consentedFlow(env);
+
+    const upstream = spyOnUpstreamFetch();
+    const res = await call(
+      env,
+      `/callback?state=${encodeURIComponent(state)}&code=fake&iss=${encodeURIComponent("https://evil.example")}`,
+      { headers: { Cookie: cookie } },
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("invalid issuer");
+    expect(upstream).toEqual([]);
+  });
+
+  it("proceeds when the callback names Google's own issuer", async () => {
+    const env = fullEnv();
+    const { state, cookie } = await consentedFlow(env);
+
+    const upstream = spyOnUpstreamFetch();
+    const res = await call(
+      env,
+      `/callback?state=${encodeURIComponent(state)}&code=fake&iss=${encodeURIComponent("https://accounts.google.com")}`,
+      { headers: { Cookie: cookie } },
+    );
+
+    expect(upstream).toContain(GOOGLE_TOKEN_URL);
+    expect(res.status).toBe(403);
+  });
+
+  // The other half of RFC 9207: charter is an authorization server here, and
+  // must name itself on the response it sends back to the MCP client. A wrong
+  // value is worse than none — a client that validates `iss` rejects the code —
+  // so pin it to the origin the client would have read our metadata from.
+  it("names itself as the issuer on the redirect back to the client", async () => {
+    const env = fullEnv();
+    const { state, cookie } = await consentedFlow(env);
+
+    stubGoogleSignIn("someone@example.com");
+    const res = await call(env, `/callback?state=${encodeURIComponent(state)}&code=good`, {
+      headers: { Cookie: cookie },
+    });
+
+    expect(res.status).toBe(302);
+    const back = new URL(res.headers.get("Location")!);
+    expect(back.origin + back.pathname).toBe(REDIRECT_URI);
+    expect(back.searchParams.get("code")).toBeTruthy();
+    expect(back.searchParams.get("iss")).toBe(ORIGIN);
+    // The client's own `state` still has to survive alongside it.
+    expect(back.searchParams.get("state")).toBe("client-state");
+  });
+
+  /** Answer Google's token endpoint with a usable identity for `email`. */
+  function stubGoogleSignIn(email: string): void {
+    const b64url = (o: unknown) =>
+      btoa(JSON.stringify(o)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    // Unsigned on purpose: nothing in the gateway verifies this — core does
+    // (google.ts's header comment). decodeIdTokenClaims only reads the payload.
+    const idToken = `${b64url({ alg: "none" })}.${b64url({
+      email,
+      email_verified: true,
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    })}.`;
+    vi.stubGlobal("fetch", (async () =>
+      new Response(
+        JSON.stringify({ id_token: idToken, refresh_token: "refresh-abc" }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )) as typeof fetch);
+  }
+
   async function consentedFlow(env: Env): Promise<{ state: string; cookie: string }> {
     const started = await startFlow(env);
     const state = await consent(env, started.state, started.cookie);
     return { state, cookie: started.cookie };
   }
+});
+
+/**
+ * Client ID Metadata Documents (spec 2026-07-28 deprecates DCR in favour of
+ * them). A CIMD client never POSTs to /register, so screenRegistration never
+ * sees it — these tests are the evidence that the redirect-URI control still
+ * applies to it, enforced at /authorize instead.
+ */
+describe("CIMD (client_id as a metadata document URL)", () => {
+  const CIMD_URL = "https://client.example/mcp-client.json";
+
+  /** Serve a metadata document for CIMD_URL; 404 anything else. */
+  function stubMetadata(doc: Record<string, unknown>): void {
+    vi.stubGlobal("fetch", (async (input: unknown) =>
+      String(input) === CIMD_URL
+        ? new Response(JSON.stringify(doc), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+        : new Response("not found", { status: 404 })) as typeof fetch);
+  }
+
+  function authorizeAs(env: Env, redirectUri: string) {
+    return call(
+      env,
+      "/authorize?" +
+        new URLSearchParams({
+          response_type: "code",
+          client_id: CIMD_URL,
+          redirect_uri: redirectUri,
+          state: "client-state",
+          code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+          code_challenge_method: "S256",
+        }).toString(),
+    );
+  }
+
+  it("advertises CIMD support, which is also proof the SSRF compat flag is live", async () => {
+    // The provider only advertises this when clientIdMetadataDocumentEnabled
+    // AND global_fetch_strictly_public are both on, so one assertion covers the
+    // wrangler.jsonc half — the half nothing else in the suite would catch.
+    const res = await call(fullEnv(), "/.well-known/oauth-authorization-server");
+    const metadata = (await res.json()) as Record<string, unknown>;
+    expect(metadata.client_id_metadata_document_supported).toBe(true);
+  });
+
+  it("refuses a CIMD client whose document points the code at its own server", async () => {
+    stubMetadata({
+      client_id: CIMD_URL,
+      client_name: "Perfectly Normal Client",
+      redirect_uris: ["https://evil.example/collect"],
+      token_endpoint_auth_method: "none",
+    });
+
+    const res = await authorizeAs(fullEnv(), "https://evil.example/collect");
+
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("will not send an authorization code");
+  });
+
+  it("accepts a CIMD client with a loopback redirect_uri", async () => {
+    // Positive control: same route, same document shape, and the only
+    // difference is a redirect_uri that cannot be collected remotely.
+    stubMetadata({
+      client_id: CIMD_URL,
+      client_name: "Perfectly Normal Client",
+      redirect_uris: [REDIRECT_URI],
+      token_endpoint_auth_method: "none",
+    });
+
+    const res = await authorizeAs(fullEnv(), REDIRECT_URI);
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("localhost");
+  });
 });
 
 describe("PKCE S256 enforcement (allowPlainPKCE: false)", () => {

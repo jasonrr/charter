@@ -228,6 +228,15 @@ never sees a token. Some upstreams need an extra authorize parameter to issue a
 refresh token at all (Google: `"authorize_params": {"access_type": "offline",
 "prompt": "consent"}`); parameters the gateway sets itself are refused.
 
+Optionally add `"issuer"` — the upstream's issuer identifier, e.g.
+`"https://accounts.google.com"`. Set it and the callback refuses any code
+arriving with an `iss` that is not that value (RFC 9207, required of clients by
+the 2026-07-28 MCP spec). Leave it unset and `iss` is ignored, because there is
+nothing recorded to compare against; most upstreams do not send one yet. Use the
+`issuer` field of the upstream's `/.well-known/openid-configuration`, not its
+authorize URL — for Google those differ. A value that is not an `https://` URL
+is rejected at parse time rather than silently disabling the check.
+
 Then two strings have to agree:
 
 1. Register `https://<your-gateway-host>/connect/<id>/callback` as the redirect
@@ -334,6 +343,14 @@ the happy path:
 - `GET /authorize` for a registered client returns **200 HTML** (the consent
   screen), not a 302 to Google, and the page shows the client's redirect URI
   origin.
+- The authorization-server metadata reports CIMD support — `false` here means
+  the `global_fetch_strictly_public` compatibility flag did not survive the
+  deploy:
+
+      curl -s https://<your-gateway-host>/.well-known/oauth-authorization-server \
+        | jq .client_id_metadata_document_supported
+      # expect true
+
 - An authenticated `tools/list` shows `charter_read` with `readOnlyHint: true`.
 
 **Happy path**, from a real client: point it at `https://<your-gateway-host>/mcp`,
@@ -469,9 +486,44 @@ runbook (the top-level config), and staging stays alive as pre-prod.
   URL derived from the *request's* origin — Host-steerable, so the gateway
   strips and replaces it with the `CHARTER_GATEWAY_URL`-derived one
   (`withResourceMetadata` in `src/index.ts`); and it supports CIMD behind the
-  `global_fetch_strictly_public` compatibility flag, which is deliberately NOT
-  set — CIMD-registered clients would bypass `/register`'s redirect-URI
-  screening, a surface change that needs its own review before enabling.
+  `global_fetch_strictly_public` compatibility flag.
+- **CIMD is enabled (2026-07-29).** Spec revision `2026-07-28` deprecates
+  Dynamic Client Registration in favour of Client ID Metadata Documents: a
+  `client_id` that is an https URL resolves to a JSON document describing the
+  client. `/register` stays for clients and authorization servers that have not
+  moved.
+
+  *One thing the gateway deliberately does not do:* apply OIDC's
+  `application_type` redirect-URI constraints. The `2026-07-28` spec requires
+  MCP **clients** to send `application_type` on Dynamic Client Registration,
+  because omitting it defaults to `"web"` under OIDC and a strict OIDC server
+  then refuses the `localhost` URIs a native client needs — and it says
+  outright that "non-OIDC servers safely ignore the parameter." Charter is a
+  plain OAuth 2.1 authorization server, so it ignores it: `/register` accepts
+  loopback and gateway-origin https URIs by its own policy whichever
+  `application_type` a client sends, or none. A client that sends `"web"`
+  alongside a loopback URI is refused by a strict OIDC server and works here.
+  Nothing to configure; noted because the asymmetry is the kind of thing that
+  looks like a gateway bug from the client side.
+
+  This entry previously recorded CIMD as deliberately off, because a CIMD client
+  never POSTs to `/register` and so would bypass the redirect-URI screening that
+  prevents the confused-deputy attack described below. That was the right call
+  until the review it asked for happened; the review's outcome is that the
+  screening belongs somewhere both kinds of client pass, so
+  `classifyRedirectUri` now runs again at `/authorize` — for a DCR client a
+  cheap re-check of what registration already allowed, for a CIMD client the
+  only place it is checked at all. Enabling CIMD without that check reopens the
+  attack in full, so treat the two as one change.
+
+  `global_fetch_strictly_public` is set in both `wrangler.jsonc` and
+  `wrangler.staging.jsonc`. It is not optional decoration: the gateway now
+  fetches a URL an unauthenticated caller chose, and the flag is what keeps that
+  fetch off private and Cloudflare-internal addresses. The provider refuses to
+  do CIMD at all without it, and the authorization-server metadata advertises
+  `client_id_metadata_document_supported` only when both are on — which is what
+  `gateway/test/index.wiring.test.ts` asserts, so a dropped flag fails a test
+  rather than silently disabling the feature.
 - **Sign-in is bound to one browser — and an earlier version of this document
   was wrong about why that matters.** It described the unsigned `state` as "a
   privilege downgrade and confused-deputy, not a privilege escalation… the
