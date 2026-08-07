@@ -275,7 +275,9 @@ the stable spec (2025-11-25) and confirmed across six established remote servers
    artifacts **by reference** (URI/id) and dereference inside the verb. No
    inline-base64 input field, ever. If charter later needs true client upload,
    mirror SEP-2631's `authorizeUpload → file URI` control-plane — don't invent an
-   inline arg that has to be broken later.
+   inline arg that has to be broken later. The `gdrive` reference pack's
+   `gdrive.file.initiate_upload` is that mirror: the server returns a Drive
+   resumable-session URI, the client PUTs the bytes out-of-band.
 2. Return typed `structuredContent`; above `maxInlineBytes`, return a reference,
    not bytes. On remote the **server side** holds the blob — there is no
    client-disk analog of today's `args_path`/`out_path`.

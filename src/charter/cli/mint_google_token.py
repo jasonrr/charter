@@ -1,7 +1,7 @@
 """Generalized Google credential-minting one-off for adopters.
 
-Mint a drive.readonly refresh token and store it as an authorized-user JSON
-in Secret Manager. Project/secret names from args or env, no literals.
+Mint a Drive refresh token and store it as an authorized-user JSON in
+Secret Manager. Project/secret names from args or env, no literals.
 
 Usage:
     charter mint-google-token --client-secrets <path.json> [--secret-name <name>] [--dry-run]
@@ -13,7 +13,13 @@ from google.cloud import secretmanager
 
 from charter.settings import get_settings
 
-SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+SCOPES = [
+    "https://www.googleapis.com/auth/drive.readonly",
+    # drive.file (create/manage only files this app creates): needed by the
+    # gdrive pack's resumable-upload verb — the local→Drive hop for binaries
+    # that must never go inline (§4.5). Re-run this mint once after adding it.
+    "https://www.googleapis.com/auth/drive.file",
+]
 
 
 def mint(client_secrets):

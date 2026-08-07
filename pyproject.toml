@@ -45,6 +45,7 @@ charter-packtest = "charter.packtest.cli:main"
 [project.entry-points."charter.packs"]
 airtable = "charter.packs.airtable"
 bigquery = "charter.packs.bigquery"
+gdrive = "charter.packs.gdrive"
 
 [tool.setuptools.packages.find]
 where = ["src"]
