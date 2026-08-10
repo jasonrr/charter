@@ -116,6 +116,41 @@ function spyOnUpstreamFetch(): string[] {
 
 afterEach(() => vi.unstubAllGlobals());
 
+describe("consent page CSP", () => {
+  // The consent form posts to /authorize/continue, which 302s to Google. Chrome
+  // enforces form-action across the submission's redirect chain, so 'self' alone
+  // silently blocks the hop to Google and "Continue" appears to do nothing. The
+  // directive must name the Google origin too.
+  it("allows the Google auth origin in form-action, not just 'self'", async () => {
+    const env = fullEnv();
+    const reg = await call(env, "/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        redirect_uris: [REDIRECT_URI],
+        token_endpoint_auth_method: "none",
+      }),
+    });
+    const { client_id } = (await reg.json()) as { client_id: string };
+
+    const authorize = await call(
+      env,
+      "/authorize?" +
+        new URLSearchParams({
+          response_type: "code",
+          client_id,
+          redirect_uri: REDIRECT_URI,
+          state: "client-state",
+          code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+          code_challenge_method: "S256",
+        }).toString(),
+    );
+    expect(authorize.status).toBe(200);
+    const csp = authorize.headers.get("Content-Security-Policy") ?? "";
+    expect(csp).toContain("form-action 'self' https://accounts.google.com");
+  });
+});
+
 describe("/callback wiring order", () => {
   it("rejects a signed, cookie-bound state that skipped the consent screen — before any Google call", async () => {
     const env = fullEnv();

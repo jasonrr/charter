@@ -570,8 +570,15 @@ const authHandler = {
           // posts cross-site and SameSite=Lax already withholds the cookie, but
           // on the one page whose whole job is informed consent the protection
           // should be stated outright, not left resting on a cookie attribute.
+          //
+          // form-action must name accounts.google.com, not just 'self': the
+          // consent form posts to /authorize/continue (self), which 302s to
+          // Google. Chrome enforces form-action across the submission's redirect
+          // chain, so 'self' alone silently blocks the hop to Google and the
+          // button appears to do nothing. GOOGLE_ISSUER is that exact origin.
           "Content-Security-Policy":
-            "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; " +
+            "default-src 'none'; style-src 'unsafe-inline'; " +
+            `form-action 'self' ${GOOGLE_ISSUER}; ` +
             "frame-ancestors 'none'",
           // For anything still reading the older header.
           "X-Frame-Options": "DENY",
