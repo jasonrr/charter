@@ -365,7 +365,10 @@ describe("PKCE S256 enforcement (allowPlainPKCE: false)", () => {
           }).toString(),
       );
       expect(res.status).toBe(400);
-      expect(await res.text()).toContain("plain PKCE method is not allowed");
+      // Provider 0.9+ phrases both refusals as a PKCE requirement ("Public
+      // clients must use PKCE with the authorization code flow.") rather than
+      // naming the plain method; the 400 is the contract, the wording isn't.
+      expect(await res.text()).toContain("PKCE");
     }
   });
 });
