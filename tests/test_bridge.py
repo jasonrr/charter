@@ -140,6 +140,11 @@ def test_target_synthesizes_hubspot_id():
     assert main._target({"target": "explicit"}) == "explicit"
 
 
+def test_target_falls_back_to_doc_id():
+    assert main._target({"verb": "content.g_doc.write", "doc_id": "abc123"}) == "abc123"
+    assert main._target({"target": "explicit", "doc_id": "abc123"}) == "explicit"
+
+
 def test_target_prefix_applied_when_registered():
     # A verb registered with target_prefix gets prefixed audit targets; an
     # unregistered verb (or one without a prefix) keeps the raw id.

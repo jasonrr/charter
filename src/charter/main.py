@@ -151,7 +151,7 @@ def _target(body):
     """Best-effort audit target from the request body (used before the handler runs).
     Callers may pass an explicit `target`; otherwise fall back through common id keys."""
     t = (body.get("target") or body.get("email_id") or body.get("deal_id")
-         or body.get("url") or body.get("folder_id") or body.get("file_id"))
+         or body.get("url") or body.get("doc_id") or body.get("folder_id") or body.get("file_id"))
     if t:
         return t
     vid = body.get("id")
