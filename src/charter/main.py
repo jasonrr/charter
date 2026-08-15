@@ -25,7 +25,8 @@ from charter.settings import get_settings
 from charter import identity_context
 from charter.identity_verbs import whoami
 from charter import results
-from charter.sdk import VERBS, PREFIXES, register, is_read, target_prefix, summary, _DRY_RUN
+from charter.sdk import (VERBS, PREFIXES, register, is_read, target_prefix,
+                         target_field, summary, _DRY_RUN)
 from charter.sdk import loader as _pack_loader
 
 # Startup validation: a missing required config value fails the cold start here
@@ -149,14 +150,27 @@ def _success(verb, rid, caller, result):
 
 def _target(body):
     """Best-effort audit target from the request body (used before the handler runs).
-    Callers may pass an explicit `target`; otherwise fall back through common id keys."""
-    t = (body.get("target") or body.get("email_id") or body.get("deal_id")
+    Precedence: explicit `target` -> the verb's registered target_field (labelled by
+    its target_prefix when declared, matching the post-audit "<prefix>:<id>" shape)
+    -> the legacy common-id-key chain for undeclared verbs."""
+    t = body.get("target")
+    if t:
+        return t
+    verb = body.get("verb")
+    verb = verb if isinstance(verb, str) else ""   # body is raw JSON; never let a
+    field = target_field(verb)                     # non-string verb 500 the audit path
+    if field:
+        v = body.get(field)
+        if v:
+            prefix = target_prefix(verb)
+            return f"{prefix}:{v}" if prefix else str(v)
+    t = (body.get("email_id") or body.get("deal_id")
          or body.get("url") or body.get("doc_id") or body.get("folder_id") or body.get("file_id"))
     if t:
         return t
     vid = body.get("id")
     if vid:
-        prefix = target_prefix(body.get("verb", ""))
+        prefix = target_prefix(verb)
         return f"{prefix}:{vid}" if prefix else str(vid)
     return None
 

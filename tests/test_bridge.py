@@ -157,6 +157,46 @@ def test_target_prefix_applied_when_registered():
         del _sdk._TARGET_PREFIXES["demo.prefixed.write"]
 
 
+def test_target_uses_registered_target_field():
+    # A verb registered with target_field pulls its audit target from that body
+    # key — packs declare it, so a new id-shaped field never needs an engine edit.
+    from charter import sdk as _sdk
+    _sdk._TARGET_FIELDS["demo.doc.write"] = "sheet_id"
+    try:
+        assert main._target({"verb": "demo.doc.write", "sheet_id": "abc"}) == "abc"
+        # explicit target still wins over the declared field
+        assert main._target({"verb": "demo.doc.write", "target": "explicit",
+                             "sheet_id": "abc"}) == "explicit"
+        # declared field absent from the body -> legacy chain still applies
+        assert main._target({"verb": "demo.doc.write", "file_id": "f1"}) == "f1"
+    finally:
+        del _sdk._TARGET_FIELDS["demo.doc.write"]
+
+
+def test_target_field_composes_with_target_prefix():
+    # target_field + target_prefix together give pre-audit rows the same
+    # "<prefix>:<id>" shape the handlers' post-audit targets use.
+    from charter import sdk as _sdk
+    _sdk._TARGET_FIELDS["demo.doc.write"] = "sheet_id"
+    _sdk._TARGET_PREFIXES["demo.doc.write"] = "demo_sheet"
+    try:
+        assert main._target({"verb": "demo.doc.write", "sheet_id": "abc"}) == "demo_sheet:abc"
+    finally:
+        del _sdk._TARGET_FIELDS["demo.doc.write"]
+        del _sdk._TARGET_PREFIXES["demo.doc.write"]
+
+
+def test_register_declares_target_field():
+    from charter import sdk as _sdk
+    _sdk.register("demo.tf.write", lambda b, c: {}, "post", target_field="sheet_id")
+    try:
+        assert _sdk.target_field("demo.tf.write") == "sheet_id"
+        assert _sdk.target_field("demo.undeclared.write") is None
+    finally:
+        del _sdk.VERBS["demo.tf.write"]
+        del _sdk._TARGET_FIELDS["demo.tf.write"]
+
+
 # --- actor identity (verified human behind the key) ---------------------------
 
 def _as_marketer(monkeypatch, require_actor=True):

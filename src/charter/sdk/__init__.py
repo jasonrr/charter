@@ -80,6 +80,8 @@ PREFIXES = {}        # prefix -> PrefixEntry, insertion-ordered (dispatch order)
 _DECLARED_READ = {}  # verb -> declared read flag (exact registrations)
 _DRY_RUN = set()     # verbs declaring dry_run support (read by the dispatcher, KTD-8)
 _TARGET_PREFIXES = {}  # verb -> audit-target prefix (e.g. "hubspot_email"); packs declare at register
+_TARGET_FIELDS = {}    # verb -> body key holding the audit target (e.g. "doc_id"); packs declare
+                       # at register, so a new id-shaped field never needs an engine edit
 
 # Action leaves that read without a side effect; everything else is a write.
 # "whoami" reads the caller's own auth surface (identity.whoami).
@@ -109,6 +111,11 @@ def target_prefix(verb):
     return _TARGET_PREFIXES.get(verb)
 
 
+def target_field(verb):
+    """Body key declared to hold this verb's audit target, or None."""
+    return _TARGET_FIELDS.get(verb)
+
+
 def is_read(verb):
     """Read/write classification: declared exact-verb flag first, then the
     registered prefix family's declared flag, then the leaf convention. The
@@ -123,9 +130,12 @@ def is_read(verb):
 
 
 def register(verb, handler, audit_policy="post", *, read=None, dry_run=False,
-             target_prefix=None):
+             target_prefix=None, target_field=None):
     """Register one exact verb. Refuses (PackError) a name collision or a
-    declared read flag contradicting the leaf/prefix convention."""
+    declared read flag contradicting the leaf/prefix convention. target_field
+    names the body key holding the audit target (essential for "pre" verbs,
+    whose row is written before the handler can return one); target_prefix
+    labels it, giving pre rows the same "<prefix>:<id>" shape as post rows."""
     if verb in VERBS:
         raise PackError(f"verb_collision: {verb!r} is already registered")
     if read is not None and bool(read) != is_read(verb):
@@ -135,6 +145,8 @@ def register(verb, handler, audit_policy="post", *, read=None, dry_run=False,
     VERBS[verb] = (handler, audit_policy)
     if target_prefix is not None:
         _TARGET_PREFIXES[verb] = target_prefix
+    if target_field is not None:
+        _TARGET_FIELDS[verb] = target_field
     if read is not None:
         _DECLARED_READ[verb] = bool(read)
     if dry_run:
