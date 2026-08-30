@@ -134,18 +134,6 @@ See [`docs/configuration.md`](docs/configuration.md) for the full env-var table.
 | `ALLOWED_DOMAIN` | Yes | Email domain allowed for actor sign-in |
 | `PACKS` | No | Comma-separated list of pack distributions to load |
 
-## pi users
-
-pi (the pi coding agent) can load the same skills and MCP server as the Claude
-plugin:
-
-    pi install git:github.com/jasonrr/charter
-
-Set `CHARTER_GATEWAY_URL` to your gateway deployment's origin (e.g.
-`https://charter-gw.example.com`) in the environment pi launches from — the
-analog of the Claude plugin's `gateway_url` user config. Sign-in is Google
-OAuth in your browser, on first use.
-
 ## License
 
 Apache-2.0 — see [LICENSE](LICENSE).

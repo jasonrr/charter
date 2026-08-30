@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "charter": {
-      "type": "http",
-      "url": "${CHARTER_GATEWAY_URL}/mcp"
-    }
-  }
-}
