@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "charter",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Charter — governed verb API for AI agents. Audited, permissioned, actor-identified verbs with embedded business logic. Points your client at a charter-gateway deployment; sign-in is Google OAuth in the client, no pasted secrets.",
   "author": {
     "name": "Charter Contributors"
