@@ -196,3 +196,28 @@ def test_listed_for_everyone_and_is_write(monkeypatch):
     assert status == 200
     assert body["verbs"]["improve.report"]["read"] is False
     assert body["verbs"]["improve.report"]["summary"]
+
+
+# --- hint on failing envelopes ---------------------------------------------------
+
+def test_hint_present_on_denied_unknown_and_verberror_when_enabled(monkeypatch):
+    _enable(monkeypatch); _as_caller(monkeypatch, allow=(), scope_ok=False)
+    monkeypatch.setattr(main, "actor_email", lambda req: None)
+    body, status = _parse(main.bridge(FakeRequest(body={"verb": "identity.whoami"})))
+    assert status == 403 and body["hint"] == improve.HINT
+    _as_caller(monkeypatch)
+    body, status = _parse(main.bridge(FakeRequest(body={"verb": "no.such.verb"})))
+    assert status == 404 and body["hint"] == improve.HINT
+    body, status = _parse(main.bridge(FakeRequest(body={"verb": "result.read", "id": "nope"})))
+    assert body["ok"] is False and body["error"] == "result_unknown" and body["hint"] == improve.HINT
+
+
+def test_hint_absent_when_disabled_and_on_improve_itself(monkeypatch):
+    _as_caller(monkeypatch, allow=(), scope_ok=False)
+    monkeypatch.setattr(main, "actor_email", lambda req: None)
+    body, status = _parse(main.bridge(FakeRequest(body={"verb": "identity.whoami"})))
+    assert status == 403 and "hint" not in body
+    _enable(monkeypatch); _as_caller(monkeypatch)
+    _capture_post(monkeypatch)
+    body, status = _parse(main.bridge(FakeRequest(body={"verb": "improve.report", "kind": "bug", "title": "t", "body": "b"})))
+    assert status == 400 and "hint" not in body

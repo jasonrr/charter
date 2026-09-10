@@ -131,6 +131,14 @@ def _json(obj, status):
     return (_jsonlib.dumps(obj), status, {"Content-Type": "application/json"})
 
 
+def _with_hint(out, verb):
+    """Point a failing caller at improve.report. Only when that verb is configured
+    (a hint to a disabled verb is noise) and never on improve.report's own errors."""
+    if verb != "improve.report" and improve.enabled():
+        out["hint"] = improve.HINT
+    return out
+
+
 def _success(verb, rid, caller, result):
     """The 200 envelope, offloading oversize bodies to the results store (§4.5).
 
@@ -236,7 +244,7 @@ def bridge(request):
         return _json({"ok": False, "error": "unauthorized", "request_id": rid}, 401)
     if not _can(caller, verb):
         record(caller, verb, None, "denied", rid=rid)
-        return _json({"ok": False, "error": "denied", "request_id": rid}, 403)
+        return _json(_with_hint({"ok": False, "error": "denied", "request_id": rid}, verb), 403)
     try:
         actor = actor_email(request)     # None when absent; raises VerbError when present-but-bad
     except VerbError as e:
@@ -265,7 +273,7 @@ def bridge(request):
                 fn, audit = entry.handler, entry.audit_policy
                 break
     if fn is None:
-        return _json({"ok": False, "error": "unknown_verb", "request_id": rid}, 404)
+        return _json(_with_hint({"ok": False, "error": "unknown_verb", "request_id": rid}, verb), 404)
     if body.get("read_only") and not _is_read(verb):   # read-only tool sent a write verb
         record(caller, verb, target, "write_in_read_tool", rid=rid, on_behalf_of=actor)
         return _json({"ok": False, "verb": verb, "error": "write_in_read_tool",
@@ -303,7 +311,7 @@ def bridge(request):
         out = {"ok": False, "verb": verb, "error": e.code, "request_id": rid}
         if e.detail:
             out["detail"] = e.detail
-        return _json(out, e.status)
+        return _json(_with_hint(out, verb), e.status)
     except Exception as e:
         record(caller, verb, target, "error", rid=rid, detail=str(e),
                on_behalf_of=actor)
