@@ -31,6 +31,7 @@ Match on the `error` field:
 - `bad_deal_id` / `naming_violation` — malformed input
 - `write_in_read_tool` — you sent a write verb through `charter_read` (use `charter_call` instead)
 - `unauthorized` — your signed-in email has no grant — the deployment operator must add you (see docs/deployment/grants.md)
+- `improve_disabled` — this deployment has not configured `improve.report`; tell the user what you would have filed
 
 ## Large Payloads
 
@@ -40,3 +41,30 @@ Match on the `error` field:
   instead of inline JSON. Read the linked resource only if the inline summary
   is not enough — it is the full body. Links expire and are readable only by
   the caller that produced them; if one is gone, re-run the verb.
+
+## Reporting a gap
+
+Charter gets better from use. When any of these happen during a task, file it:
+
+- a verb returned an error you had to work around
+- a verb you needed does not exist, or exists but is `denied` to you
+- you could not finish the task with the verbs available
+
+Call `improve.report` with `kind: "gap"`. `title` is one line; `body` says what
+you were trying to do, what happened, and what would have fixed it; `context`
+carries `verb`, `error_code`, `request_id` (from the failing response), and
+`workaround` if you found one. It files a GitHub issue and returns its URL —
+tell the user the issue number. It is callable by every authenticated caller,
+even one with no other scope.
+
+Ask the user before filing only if the report would include their data. A
+failing response may carry a `hint` field pointing you at this verb.
+
+## Creating and sharing a skill
+
+When a user asks for a skill, draft it with them as a normal `SKILL.md`
+(a short H1, when to use it, the verbs it calls in order, what to confirm
+with the user). When they want the team to have it, call `improve.report`
+with `kind: "skill"`, `title` = the skill name, `body` = why it exists, and
+`proposal` = the full markdown. A maintainer reviews it and ships it in the
+next plugin version; tell the user the issue number so they can follow it.

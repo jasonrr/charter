@@ -67,6 +67,8 @@ class Settings(BaseSettings):
     posthog_api_key: SecretStr = SecretStr("")        # posthog pack (reference)
     dropboxsign_token: SecretStr = SecretStr("")      # dropboxsign pack (reference)
     dropboxsign_template_id: str = ""
+    improve_github_repo: str = ""                    # owner/name; empty disables improve.report
+    improve_github_token: SecretStr = SecretStr("")  # fine-grained PAT, issues:write on that one repo
 
     @field_validator("allowed_domain")
     @classmethod

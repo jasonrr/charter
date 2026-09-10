@@ -21,6 +21,7 @@ directly with an admin-minted `X-API-Key` (`INSTALL.md` step 4), exactly as
 
 - `skills/using-verbs.md` — how to call `charter_read` / `charter_call`.
 - `skills/pack-authoring.md` — how to write a pack.
+- `skills/improve.md` — maintainer triage of `improve.report` issues.
 - `.mcp.json` — the pointer above. No proxy process, no `user_config` secrets.
 
 ## How an update reaches an installed client

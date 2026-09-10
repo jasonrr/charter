@@ -48,6 +48,16 @@ compliance one: a gateway that holds one credential and translates has nothing
 to keep between calls. It means the revision that gives session-backed
 deployments a migration gives charter nothing to do.
 
+## Gets smarter from use
+
+The ideas for what a verb or skill should be come from usage, not only from
+whoever wrote the pack. When an agent hits a gap — a verb that failed and was
+worked around, one it needed and didn't have — or a user drafts a skill worth
+sharing, `improve.report` files it as a GitHub issue from any Claude surface.
+Failing responses carry a hint pointing at it. A maintainer skill turns the
+issues into ordinary PRs; the next step is an agent that does that itself.
+See [`docs/improve.md`](docs/improve.md).
+
 ## Why not the vendor's MCP server?
 
 Vendor MCP servers solve connectivity: they get an agent talking to one API.
