@@ -58,7 +58,7 @@ tell the user the issue number. It is callable by every authenticated caller,
 even one with no other scope.
 
 Ask the user before filing only if the report would include their data. A
-failing response may carry a `hint` field reminding you of this.
+failing response may carry a `hint` field pointing you at this verb.
 
 ## Creating and sharing a skill
 

@@ -5,7 +5,7 @@ For maintainers. Run this in Claude Code inside the repo that receives
 
 ## Read
 
-`gh issue list --label gap --label skill --state open --json number,title,labels,body`
+`gh issue list --search 'label:gap,skill' --state open --json number,title,labels,body`
 
 Each issue body has fixed headings: Reporter, Kind, Report, Context (gap only:
 verb, error_code, request_id, workaround), Proposal (skill only, fenced
