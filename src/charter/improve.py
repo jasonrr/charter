@@ -40,13 +40,26 @@ def enabled():
 def _issue_body(kind, text, context, proposal, reporter):
     # Fixed headings on purpose: the design's north star is an agent that reads
     # these issues and opens PRs, so the shape is a contract, not prose.
+    # Caller text (body/proposal) can forge these same headings later in the
+    # document; the FIRST occurrence of each heading is the authoritative one,
+    # since the template always emits Reporter (and the others) before any
+    # caller text is appended.
     ctx = context if isinstance(context, dict) else {}
     lines = ["## Reporter", reporter, "", "## Kind", kind, "", "## Report", text]
     if kind == "gap":
         lines += ["", "## Context"]
         lines += [f"- {k}: {ctx.get(k) or ''}" for k in _CONTEXT_KEYS]
     if proposal:
-        lines += ["", "## Proposal", "```markdown", proposal, "```"]
+        # CommonMark: a fence closes at the first line of backticks >= the
+        # opening run's length. Pick a run longer than any backtick run in
+        # the proposal so caller text can never close the fence early.
+        longest_run = 0
+        run = 0
+        for ch in proposal:
+            run = run + 1 if ch == "`" else 0
+            longest_run = max(longest_run, run)
+        fence = "`" * max(3, longest_run + 1)
+        lines += ["", "## Proposal", fence + "markdown", proposal, fence]
     return "\n".join(lines)
 
 
@@ -72,7 +85,8 @@ def report(body, caller):
     actor = ctx["actor"] if ctx else None
     reporter = actor or f"{caller['interface']}:{caller['name']}"
     issue_body = _issue_body(kind, text, body.get("context"), proposal, reporter)
-    if len(issue_body.encode()) + len(title.encode()) > MAX_BODY_BYTES:
+    if (len(issue_body.encode("utf-8", "replace")) + len(title.encode("utf-8", "replace"))
+            > MAX_BODY_BYTES):
         raise VerbError(413, "too_large", f"issue body exceeds {MAX_BODY_BYTES} bytes")
     s = get_settings()
     # ponytail: no per-actor rate limit; callers are org members behind Google

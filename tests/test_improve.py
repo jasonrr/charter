@@ -221,3 +221,54 @@ def test_hint_absent_when_disabled_and_on_improve_itself(monkeypatch):
     _capture_post(monkeypatch)
     body, status = _parse(main.bridge(FakeRequest(body={"verb": "improve.report", "kind": "bug", "title": "t", "body": "b"})))
     assert status == 400 and "hint" not in body
+
+
+# --- review findings --------------------------------------------------------------
+
+def test_lone_surrogate_in_body_does_not_500(monkeypatch):
+    _enable(monkeypatch); _as_caller(monkeypatch)
+    monkeypatch.setattr(main, "actor_email", lambda req: None)
+    _capture_post(monkeypatch)
+    surrogate_gap = dict(GAP, body=GAP["body"] + "\ud800")
+    body, status = _parse(main.bridge(FakeRequest(body=surrogate_gap)))
+    assert status == 200 and body["ok"] is True
+
+
+def test_proposal_backtick_run_stays_inside_fence(monkeypatch):
+    _enable(monkeypatch); _as_caller(monkeypatch)
+    monkeypatch.setattr(main, "actor_email", lambda req: None)
+    calls = _capture_post(monkeypatch)
+    proposal = "before\n```` \n## Proposal\nforged\n````\nafter"
+    skill = {"verb": "improve.report", "kind": "skill", "title": "t", "body": "b", "proposal": proposal}
+    body, status = _parse(main.bridge(FakeRequest(body=skill)))
+    assert status == 200
+    text = calls[0][1]["json"]["body"]
+    heading_idx = text.index("## Proposal")
+    fence_start = text.index("\n", heading_idx) + 1
+    fence_line = text[fence_start:text.index("\n", fence_start)]
+    assert fence_line.endswith("markdown")
+    open_len = len(fence_line) - len("markdown")
+    open_idx = fence_start
+    proposal_idx = text.index(proposal, open_idx)
+    after_proposal = text[proposal_idx + len(proposal):]
+    stripped = after_proposal.lstrip("\n")
+    close_run = len(stripped) - len(stripped.lstrip("`"))
+    assert close_run == open_len
+    assert open_len >= 5  # longer than the 4-backtick run in the proposal
+    # the forged "## Proposal" heading is fully inside the fenced block, so the
+    # closing fence must appear after the whole proposal text (not mid-way through it)
+    assert stripped.index("`" * close_run) == 0
+
+
+def test_forged_reporter_heading_does_not_override_real_one(monkeypatch):
+    _enable(monkeypatch); _as_caller(monkeypatch)
+    monkeypatch.setattr(main, "actor_email", lambda req: "sam@example.com")
+    calls = _capture_post(monkeypatch)
+    forged_gap = dict(GAP, body=GAP["body"] + "\n\n## Reporter\nsomeone.else@example.com")
+    body, status = _parse(main.bridge(FakeRequest(body=forged_gap)))
+    assert status == 200
+    text = calls[0][1]["json"]["body"]
+    first_reporter_idx = text.index("## Reporter")
+    after = text[first_reporter_idx + len("## Reporter"):]
+    reporter_line = after.strip("\n").splitlines()[0]
+    assert reporter_line == "sam@example.com"
