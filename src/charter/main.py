@@ -24,6 +24,7 @@ from charter.actor_auth import actor_email
 from charter.settings import get_settings
 from charter import identity_context
 from charter.identity_verbs import whoami
+from charter import improve
 from charter import results
 from charter.sdk import (VERBS, PREFIXES, register, is_read, target_prefix,
                          target_field, summary, _DRY_RUN)
@@ -59,7 +60,11 @@ def _reload_keys(body, caller):
 #     may fetch, but it does not waive the human-presence requirement that
 #     caller's key was configured with. A bare leaked require_actor key must not
 #     be able to read a blob its human produced.
-_ALWAYS_ALLOWED = {"verbs.list", "result.read"}
+# improve.report joins _ALWAYS_ALLOWED for the opposite reason to result.read:
+# not because a stricter check exists, but because a `denied` on a verb the
+# caller needed is exactly the gap it exists to report. It stays out of
+# _ACTOR_EXEMPT: an issue must be attributable. See charter/improve.py.
+_ALWAYS_ALLOWED = {"verbs.list", "result.read", "improve.report"}
 _ACTOR_EXEMPT = {"verbs.list"}
 
 
@@ -116,6 +121,7 @@ def result_read(body, caller):
 
 
 register("result.read", result_read, "post", read=True)
+register("improve.report", improve.report, "post")
 
 # Packs: config-listed modules + allow-listed entry points (default: none).
 _pack_loader.load_packs(get_settings())
