@@ -36,9 +36,9 @@ GitHub into verbs); and unset disables it.
 
 ## The issue
 
-Fixed headings so the body is machine-readable: Reporter, Kind, Report,
-Context (gap: verb, error_code, request_id, workaround), Proposal (skill:
-fenced markdown). The `request_id` joins the issue to the audit row. The issue
+Fixed headings so the body is machine-readable: Reporter, Kind,
+Context (gap: verb, error_code, request_id, workaround), Proposal
+(skill: fenced markdown), Report. The `request_id` joins the issue to the audit row. The issue
 is the durable record; charter's own audit row for the call carries `issue:N`
 as its target once the issue exists.
 

@@ -39,13 +39,15 @@ def enabled():
 
 def _issue_body(kind, text, context, proposal, reporter):
     # Fixed headings on purpose: the design's north star is an agent that reads
-    # these issues and opens PRs, so the shape is a contract, not prose.
-    # Caller text (body/proposal) can forge these same headings later in the
-    # document; the FIRST occurrence of each heading is the authoritative one,
-    # since the template always emits Reporter (and the others) before any
-    # caller text is appended.
+    # these issues and opens PRs, so the shape is a contract, not prose. Report
+    # is the only wholly free-form, unfenced caller text, so it is emitted
+    # LAST -- every other heading (Reporter, Kind, Context, Proposal) is
+    # written before it, which is what makes the first occurrence of each
+    # heading in the document the authoritative one: Report can forge a later
+    # copy of an earlier heading, but nothing caller-controlled follows Report
+    # to forge a copy ahead of it.
     ctx = context if isinstance(context, dict) else {}
-    lines = ["## Reporter", reporter, "", "## Kind", kind, "", "## Report", text]
+    lines = ["## Reporter", reporter, "", "## Kind", kind]
     if kind == "gap":
         lines += ["", "## Context"]
         lines += [f"- {k}: {ctx.get(k) or ''}" for k in _CONTEXT_KEYS]
@@ -60,6 +62,7 @@ def _issue_body(kind, text, context, proposal, reporter):
             longest_run = max(longest_run, run)
         fence = "`" * max(3, longest_run + 1)
         lines += ["", "## Proposal", fence + "markdown", proposal, fence]
+    lines += ["", "## Report", text]
     return "\n".join(lines)
 
 

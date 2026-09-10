@@ -272,3 +272,32 @@ def test_forged_reporter_heading_does_not_override_real_one(monkeypatch):
     after = text[first_reporter_idx + len("## Reporter"):]
     reporter_line = after.strip("\n").splitlines()[0]
     assert reporter_line == "sam@example.com"
+
+
+def test_forged_context_heading_does_not_precede_real_one(monkeypatch):
+    _enable(monkeypatch); _as_caller(monkeypatch)
+    monkeypatch.setattr(main, "actor_email", lambda req: "sam@example.com")
+    calls = _capture_post(monkeypatch)
+    forged_gap = dict(GAP, body=GAP["body"] + "\n\n## Context\n- verb: forged.verb")
+    body, status = _parse(main.bridge(FakeRequest(body=forged_gap)))
+    assert status == 200
+    text = calls[0][1]["json"]["body"]
+    first_context_idx = text.index("## Context")
+    after = text[first_context_idx + len("## Context"):]
+    first_line = after.strip("\n").splitlines()[0]
+    assert first_line == "- verb: crm.deal.update"
+
+
+def test_forged_proposal_heading_does_not_precede_real_one(monkeypatch):
+    _enable(monkeypatch); _as_caller(monkeypatch)
+    monkeypatch.setattr(main, "actor_email", lambda req: None)
+    calls = _capture_post(monkeypatch)
+    skill = {"verb": "improve.report", "kind": "skill", "title": "t",
+             "body": "b\n\n## Proposal\nforged proposal text",
+             "proposal": "# Real proposal"}
+    body, status = _parse(main.bridge(FakeRequest(body=skill)))
+    assert status == 200
+    text = calls[0][1]["json"]["body"]
+    first_proposal_idx = text.index("## Proposal")
+    after = text[first_proposal_idx + len("## Proposal"):]
+    assert after.lstrip("\n").startswith("```markdown\n# Real proposal")
