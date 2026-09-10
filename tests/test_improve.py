@@ -46,7 +46,7 @@ def _capture_post(monkeypatch, status=201, payload=None):
     calls = []
     def fake_post(url, **kw):
         calls.append((url, kw))
-        return FakeResp(status, payload or {"html_url": "https://github.com/acme/tools/issues/7", "number": 7})
+        return FakeResp(status, payload if payload is not None else {"html_url": "https://github.com/acme/tools/issues/7", "number": 7})
     monkeypatch.setattr(improve.requests, "post", fake_post)
     return calls
 
@@ -138,6 +138,24 @@ def test_github_unreachable_maps_to_502(monkeypatch):
     body, status = _parse(main.bridge(FakeRequest(body=GAP)))
     assert status == 502 and body["error"] == "github_error"
     assert "ghp_secret" not in json.dumps(body)
+
+
+def test_github_201_with_unexpected_body_maps_to_502(monkeypatch):
+    _enable(monkeypatch); _as_caller(monkeypatch)
+    monkeypatch.setattr(main, "actor_email", lambda req: None)
+    _capture_post(monkeypatch, status=201, payload={})
+    body, status = _parse(main.bridge(FakeRequest(body=GAP)))
+    assert status == 502 and body["error"] == "github_error"
+    assert "ghp_secret" not in json.dumps(body)
+
+
+def test_too_large_title_counts_toward_limit(monkeypatch):
+    _enable(monkeypatch); _as_caller(monkeypatch)
+    monkeypatch.setattr(main, "actor_email", lambda req: None)
+    calls = _capture_post(monkeypatch)
+    big_title = dict(GAP, title="x" * (improve.MAX_BODY_BYTES + 1))
+    body, status = _parse(main.bridge(FakeRequest(body=big_title)))
+    assert status == 413 and body["error"] == "too_large" and calls == []
 
 
 def test_scope_exempt_but_not_actor_exempt(monkeypatch):

@@ -72,7 +72,7 @@ def report(body, caller):
     actor = ctx["actor"] if ctx else None
     reporter = actor or f"{caller['interface']}:{caller['name']}"
     issue_body = _issue_body(kind, text, body.get("context"), proposal, reporter)
-    if len(issue_body.encode()) > MAX_BODY_BYTES:
+    if len(issue_body.encode()) + len(title.encode()) > MAX_BODY_BYTES:
         raise VerbError(413, "too_large", f"issue body exceeds {MAX_BODY_BYTES} bytes")
     s = get_settings()
     # ponytail: no per-actor rate limit; callers are org members behind Google
@@ -92,6 +92,10 @@ def report(body, caller):
         # Status only. GitHub's error body never carries our token, but keeping
         # it out of the audit row is cheaper than proving that on every path.
         raise VerbError(502, "github_error", f"GitHub returned {r.status_code}")
-    data = r.json()
-    return {"issue": data["html_url"], "number": data["number"],
-            "target": f"issue:{data['number']}"}
+    try:
+        data = r.json()
+        number, url = data["number"], data["html_url"]
+    except (ValueError, KeyError, TypeError):
+        # The issue exists; we just cannot name it. Never echo the body.
+        raise VerbError(502, "github_error", "GitHub returned 201 with an unexpected body")
+    return {"issue": url, "number": number, "target": f"issue:{number}"}
