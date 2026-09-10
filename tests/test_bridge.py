@@ -140,6 +140,17 @@ def test_target_synthesizes_hubspot_id():
     assert main._target({"target": "explicit"}) == "explicit"
 
 
+def test_target_is_bounded_and_typed():
+    # A caller-supplied target is evidence, not storage: long values are trimmed,
+    # numbers become strings, and structured JSON is dropped rather than repr'd.
+    assert main._target({"target": "x" * 10_000}) == "x" * main._MAX_TARGET
+    assert main._target({"deal_id": "d" * 10_000}) == "d" * main._MAX_TARGET
+    assert main._target({"verb": "cms.page.publish", "id": 123}) == "123"
+    assert main._target({"target": {"nested": "object"}}) is None
+    assert main._target({"target": ["a", "b"]}) is None
+    assert main._target({"target": True}) is None
+
+
 def test_target_falls_back_to_doc_id():
     assert main._target({"verb": "content.g_doc.write", "doc_id": "abc123"}) == "abc123"
     assert main._target({"target": "explicit", "doc_id": "abc123"}) == "explicit"

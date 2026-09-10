@@ -162,11 +162,31 @@ def _success(verb, rid, caller, result):
                                  "mime": "application/json"}}, 200)
 
 
+# An audit target is evidence, so a caller-supplied one is bounded the same way
+# _bounded_verb bounds an unauthenticated verb: an explicit `target` or a legacy
+# id key arrives straight off the JSON body, and with improve.report scope-exempt
+# a key holding no grants at all reaches this path. Long enough for any real id
+# or URL by a wide margin; short enough that the row is not a place to park data.
+_MAX_TARGET = 512
+
+
+def _bounded_target(t):
+    """`t` as an audit target: strings and numbers trimmed to _MAX_TARGET; anything
+    else (an object or array off the raw body) dropped rather than stringified."""
+    if isinstance(t, (int, float)) and not isinstance(t, bool):
+        t = str(t)
+    return t[:_MAX_TARGET] if isinstance(t, str) else None
+
+
 def _target(body):
-    """Best-effort audit target from the request body (used before the handler runs).
-    Precedence: explicit `target` -> the verb's registered target_field (labelled by
-    its target_prefix when declared, matching the post-audit "<prefix>:<id>" shape)
-    -> the legacy common-id-key chain for undeclared verbs."""
+    """Best-effort audit target from the request body (used before the handler runs),
+    bounded by _bounded_target. Precedence: explicit `target` -> the verb's registered
+    target_field (labelled by its target_prefix when declared, matching the post-audit
+    "<prefix>:<id>" shape) -> the legacy common-id-key chain for undeclared verbs."""
+    return _bounded_target(_raw_target(body))
+
+
+def _raw_target(body):
     t = body.get("target")
     if t:
         return t
