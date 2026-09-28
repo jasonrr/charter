@@ -115,6 +115,13 @@ export type Env = {
    */
   CHARTER_EXTRA_REDIRECT_ORIGINS?: string;
   /**
+   * Optional. Deployment-supplied MCP server instructions, sent to the client
+   * at initialize. This is where a deployment says which of ITS verbs answer
+   * which requests (e.g. "book quotes -> content.resources.query"), since the
+   * two tool descriptions here stay deployment-agnostic. Unset = none, as before.
+   */
+  CHARTER_INSTRUCTIONS?: string;
+  /**
    * Optional JSON map of upstream systems a user can connect for act-as
    * writes, e.g.
    *   {"hs":{"authorize_url":"https://app.hubspot.com/oauth/authorize",
@@ -214,7 +221,10 @@ function coreConfig(env: Env): CoreConfig {
  */
 export function buildServer(env: Env, actorToken: string): McpServer {
   // A fresh server per request: the SDK (>=1.26.0) refuses to reconnect one.
-  const server = new McpServer({ name: "charter", version: "0.1.0" });
+  const server = new McpServer(
+    { name: "charter", version: "0.1.0" },
+    env.CHARTER_INSTRUCTIONS ? { instructions: env.CHARTER_INSTRUCTIONS } : undefined,
+  );
 
   // Spec 2026-07-28 documents `traceparent` in `_meta` as the OpenTelemetry
   // propagation convention (SEP-414). Reading it here is what lets core's audit
