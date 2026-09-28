@@ -119,6 +119,9 @@ Set the non-secret values in `wrangler.jsonc` → `vars`:
 - `CHARTER_EXTRA_REDIRECT_ORIGINS` — optional, comma-separated extra https
   origins clients may register redirect URIs on. Empty (closed) by default; see
   "Sign-in is bound to one browser" below before widening it.
+- `CHARTER_INSTRUCTIONS` — optional MCP server instructions sent to clients at
+  initialize: where a deployment says which of its verbs answer which requests
+  (the two tool descriptions stay deployment-agnostic). Unset means none.
 - `CHARTER_CONNECT_PROVIDERS` — optional JSON map of upstream systems a user can
   connect for act-as writes. Unset (the default) means `/connect/*` 404s. See
   "Connecting an upstream account" below.

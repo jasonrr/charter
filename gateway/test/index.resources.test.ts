@@ -60,3 +60,14 @@ describe("charter://result/{id} resource", () => {
     expect(listed.resources).toEqual([]);
   });
 });
+
+describe("CHARTER_INSTRUCTIONS", () => {
+  it("sends deployment instructions at initialize, and none when unset", async () => {
+    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await buildServer({ ...(ENV as object), CHARTER_INSTRUCTIONS: "use x.y" } as never, "t").connect(serverT);
+    await client.connect(clientT);
+    expect(client.getInstructions()).toBe("use x.y");
+    expect((await connect()).getInstructions()).toBeUndefined();
+  });
+});
