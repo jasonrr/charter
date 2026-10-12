@@ -20,7 +20,7 @@ import OAuthProvider, {
   type OAuthProviderOptions,
 } from "@cloudflare/workers-oauth-provider";
 
-import { type CoreConfig, TRACEPARENT } from "./core.js";
+import { type CoreConfig, readCapped, TRACEPARENT } from "./core.js";
 import { coreFetch, CORE_URL } from "./container";
 export { CharterCore } from "./container";
 import {
@@ -887,16 +887,21 @@ const authHandler = {
       if (Number(request.headers.get("content-length") ?? "0") > MAX_BODY) {
         return json({ ok: false, error: "too_large" }, 413);
       }
-      // The header is advisory (chunked requests carry none): cap the bytes read.
-      const body = await request.arrayBuffer();
-      if (body.byteLength > MAX_BODY) return json({ ok: false, error: "too_large" }, 413);
+      // The header is advisory (chunked requests carry none): stream-read with a
+      // byte cap that cancels the upload, rather than buffering it all first.
+      // readCapped only touches .body/.text(), which a Request has too.
+      const { text: body, truncated } = await readCapped(request as unknown as Response, [], MAX_BODY);
+      if (truncated) return json({ ok: false, error: "too_large" }, 413);
       const headers: Record<string, string> = { "Content-Type": "application/json", "X-API-Key": key };
       const tp = request.headers.get("traceparent");
       if (tp && TRACEPARENT.test(tp)) headers["traceparent"] = tp;
       try {
         const f = await coreFetch(env);
         const res = await f(CORE_URL, { method: "POST", headers, body });
-        return new Response(res.body, { status: res.status, headers: { "Content-Type": "application/json" } });
+        const out: Record<string, string> = { "Content-Type": res.headers.get("Content-Type") ?? "application/json" };
+        const retry = res.headers.get("Retry-After");
+        if (retry) out["Retry-After"] = retry;
+        return new Response(res.body, { status: res.status, headers: out });
       } catch (e) {
         console.error("core unavailable", (e as Error).message);
         return json({ ok: false, error: "core_unavailable" }, 502);

@@ -7,7 +7,7 @@ const ORIGIN = "https://charter-gateway.example.com"; // = wrangler.jsonc CHARTE
 
 function fakeCore() {
   const seen: Request[] = [];
-  const ns = { getByName: () => ({ fetch: async (r: Request) => { seen.push(r); return new Response('{"ok":true}', { status: 200 }); } }) };
+  const ns = { getByName: () => ({ fetch: async (r: Request) => { seen.push(r); return new Response('{"ok":true}', { status: 200, headers: { "Content-Type": "application/problem+json", "Retry-After": "7" } }); } }) };
   return { ns: ns as unknown as Env["CHARTER_CORE"], seen };
 }
 function envWith(overrides: Partial<Env>): Env {
@@ -32,6 +32,8 @@ describe("POST /call", () => {
     const res = await call(envWith({ CHARTER_CORE: ns }), { method: "POST", body: '{"verb":"verbs.list"}',
       headers: { "X-API-Key": "k1", "X-Actor-Token": "evil", traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01" } });
     expect(res.status).toBe(200); expect(await res.text()).toBe('{"ok":true}');
+    expect(res.headers.get("Content-Type")).toBe("application/problem+json");
+    expect(res.headers.get("Retry-After")).toBe("7");
     expect(seen).toHaveLength(1);
     expect(seen[0].headers.get("X-API-Key")).toBe("k1");
     expect(seen[0].headers.get("X-Actor-Token")).toBeNull();

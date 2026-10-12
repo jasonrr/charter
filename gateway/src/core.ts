@@ -118,7 +118,7 @@ function cutToBytes(text: string, budget: number): string {
  * see redactionMargin. The returned text is already redacted; callers must not
  * truncate it further.
  */
-async function readCapped(
+export async function readCapped(
   res: Response,
   secrets: (string | undefined)[],
   maxBytes: number = MAX_RESPONSE_BYTES,
