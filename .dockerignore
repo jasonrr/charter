@@ -7,3 +7,5 @@ docs/
 **/__pycache__
 charter-keys.json
 charter-grants.json
+.env
+**/*.egg-info
