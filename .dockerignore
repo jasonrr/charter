@@ -1,0 +1,9 @@
+gateway/
+.venv/
+tests/
+docs/
+.git/
+**/node_modules
+**/__pycache__
+charter-keys.json
+charter-grants.json

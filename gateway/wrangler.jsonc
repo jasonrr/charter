@@ -12,6 +12,7 @@
     { "binding": "OAUTH_KV", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }
   ],
   "vars": {
+    // GCP-origin deployments only; ignored when the CHARTER_CORE binding exists
     "CHARTER_CORE_URL": "https://charter.example.com",
     "CHARTER_ALLOWED_DOMAIN": "@example.com",
     "GOOGLE_CLIENT_ID": "",
@@ -42,5 +43,15 @@
     //     "verb": "identity.hs.connect", "label": "HubSpot"
     //   }
     "CHARTER_CONNECT_PROVIDERS": {}
-  }
+  },
+  "containers": [{
+    "class_name": "CharterCore",
+    "image": "../Dockerfile",
+    "image_build_context": "..",
+    "instance_type": "basic",
+    "max_instances": 2 // old + new instance overlap for <= sleepAfter after a secret change
+  }],
+  "durable_objects": { "bindings": [{ "name": "CHARTER_CORE", "class_name": "CharterCore" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CharterCore"] }],
+  "observability": { "enabled": true }
 }
