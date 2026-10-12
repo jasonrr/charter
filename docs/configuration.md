@@ -20,6 +20,7 @@ All engine configuration is via environment variables. No config files, no YAML.
 | `CF_API_TOKEN` | (empty) | Cloudflare mode: required; D1 audit log |
 | `PACKS` | `charter` | Comma-separated list of pack distributions to load via entry-point discovery |
 | `KEYS_SECRET_NAME` | `charter-keys` | Secret Manager secret holding API keys |
+| `KEYS_FILE` | `charter-keys.json` | Cloudflare mode only: local file the `charter keys` CLI reads/writes (digests only); push with `wrangler secret put CORE_CHARTER_KEYS` |
 | `GRANTS_SECRET_NAME` | `charter-grants` | Secret Manager secret holding the email→allow grants map |
 | `CHARTER_KEYS` | (empty) | Key map JSON, cold-start fallback if Secret Manager is unreachable at boot |
 | `CHARTER_GRANTS` | (empty) | Grants JSON, cold-start fallback if Secret Manager is unreachable at boot |

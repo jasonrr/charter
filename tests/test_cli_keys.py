@@ -59,3 +59,20 @@ def test_revoke_by_digest_removes_only_that_digest(monkeypatch):
 def test_mint_requires_explicit_allow(capsys):
     with pytest.raises(SystemExit):
         keys.main(["keys", "mint", "--name", "ci"])    # no --allow -> argparse error
+
+
+def test_cloudflare_mode_uses_keys_file_and_no_settings(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CHARTER_BACKEND", "cloudflare")
+    monkeypatch.setenv("KEYS_FILE", str(tmp_path / "keys.json"))
+    for k in ("GCP_PROJECT", "GOOGLE_OAUTH_CLIENT_ID", "ALLOWED_DOMAIN"):
+        monkeypatch.delenv(k, raising=False)           # the CLI must not need engine config
+    def no_sm(): raise AssertionError("Secret Manager must not be called")
+    monkeypatch.setattr(keys, "_sm_client", no_sm)
+    keys._add("agent-a", "api", ["verbs.list"])
+    stored = json.loads((tmp_path / "keys.json").read_text())
+    assert len(stored) == 1 and next(iter(stored)).startswith("sha256:")
+    assert stored[next(iter(stored))]["name"] == "agent-a"
+    assert (tmp_path / "keys.json").stat().st_mode & 0o777 == 0o600
+    assert "wrangler secret put CORE_CHARTER_KEYS" in capsys.readouterr().err
+    keys._revoke(name="agent-a")
+    assert json.loads((tmp_path / "keys.json").read_text()) == {}

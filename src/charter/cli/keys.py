@@ -1,4 +1,5 @@
-"""Key-issuance CLI for Charter: list/add/revoke/rotate against a Secret Manager backend.
+"""Key-issuance CLI for Charter: list/add/revoke/rotate against Secret Manager, or a local
+file (KEYS_FILE) when CHARTER_BACKEND=cloudflare.
 
 Also supports offline mint mode: prints a random key + the exact sha256:
 JSON fragment for env config.
@@ -14,6 +15,7 @@ import argparse
 import hashlib
 import json
 import os
+import pathlib
 import secrets
 import sys
 
@@ -31,15 +33,35 @@ def _secret_path(name):
     return f"projects/{s.gcp_project}/secrets/{name}/versions/latest"
 
 
+def _file_mode():
+    # Read env directly, like _mint: the CLI must work before engine config exists.
+    return os.environ.get("CHARTER_BACKEND", "gcp") == "cloudflare"
+
+
+def _keys_file():
+    return pathlib.Path(os.environ.get("KEYS_FILE", "charter-keys.json"))
+
+
 def _fetch_keys():
     """Read the current key map from Secret Manager (same secret the engine reads)."""
+    if _file_mode():
+        p = _keys_file()
+        return json.loads(p.read_text()) if p.exists() else {}
     resp = _sm_client().access_secret_version(
         name=_secret_path(get_settings().keys_secret_name))
     return json.loads(resp.payload.data.decode("utf-8"))
 
 
 def _store_keys(keys):
-    """Write the updated key map back to Secret Manager."""
+    """Write the updated key map back to Secret Manager (digests only, never plaintext keys)."""
+    if _file_mode():
+        p = _keys_file()
+        p.touch(mode=0o600)
+        p.chmod(0o600)
+        p.write_text(json.dumps(keys, indent=2) + "\n")
+        print(f"wrote {p}. Push it with: npx wrangler secret put CORE_CHARTER_KEYS < {p}",
+              file=sys.stderr)
+        return
     s = get_settings()
     parent = f"projects/{s.gcp_project}/secrets/{s.keys_secret_name}"
     _sm_client().add_secret_version(
