@@ -191,3 +191,39 @@ def test_public_env_var_names_pinned(monkeypatch):
     # Secret fields default empty
     assert s.charter_keys.get_secret_value() == ""
     assert s.personal_access_token.get_secret_value() == ""
+
+
+# --- CHARTER_BACKEND ------------------------------------------------------------
+
+def test_backend_defaults_to_gcp(monkeypatch):
+    _set_required(monkeypatch)
+    assert Settings(_env_file=None).charter_backend == "gcp"
+
+
+def test_cloudflare_backend_does_not_need_gcp_project(monkeypatch):
+    _set_required(monkeypatch)
+    monkeypatch.delenv("GCP_PROJECT", raising=False)
+    monkeypatch.setenv("CHARTER_BACKEND", "cloudflare")
+    monkeypatch.setenv("CF_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("CF_D1_DATABASE_ID", "db")
+    monkeypatch.setenv("CF_API_TOKEN", "tok")
+    s = Settings(_env_file=None)
+    assert s.gcp_project == "" and s.charter_backend == "cloudflare"
+    assert s.cf_api_token.get_secret_value() == "tok"
+
+
+def test_cloudflare_backend_requires_cf_fields(monkeypatch):
+    _set_required(monkeypatch)
+    monkeypatch.setenv("CHARTER_BACKEND", "cloudflare")
+    for k in ("CF_ACCOUNT_ID", "CF_D1_DATABASE_ID", "CF_API_TOKEN"):
+        monkeypatch.delenv(k, raising=False)
+    with pytest.raises(Exception) as e:
+        Settings(_env_file=None)
+    assert "CF_ACCOUNT_ID" in str(e.value) and "tok" not in str(e.value)
+
+
+def test_unknown_backend_rejected(monkeypatch):
+    _set_required(monkeypatch)
+    monkeypatch.setenv("CHARTER_BACKEND", "aws")
+    with pytest.raises(Exception):
+        Settings(_env_file=None)

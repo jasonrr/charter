@@ -6,7 +6,7 @@ All engine configuration is via environment variables. No config files, no YAML.
 
 | Variable | Type | Description |
 |---|---|---|
-| `GCP_PROJECT` | string | GCP project ID for BigQuery, Secret Manager, and Cloud Run |
+| `GCP_PROJECT` | string | GCP project ID for BigQuery, Secret Manager, and Cloud Run. Required when `CHARTER_BACKEND=gcp` (the default); unused in cloudflare mode |
 | `GOOGLE_OAUTH_CLIENT_ID` | string | Google OAuth client ID for actor identity verification. Once charter-gateway is deployed, this must be the gateway's **Web application** client id, not the Desktop client the old stdio proxy used — see `docs/deployment/gateway.md` step 2 |
 | `ALLOWED_DOMAIN` | string | Email domain suffix allowed for actor sign-in (e.g. `@example.com`) |
 
@@ -14,6 +14,10 @@ All engine configuration is via environment variables. No config files, no YAML.
 
 | Variable | Default | Description |
 |---|---|---|
+| `CHARTER_BACKEND` | `gcp` | `gcp` or `cloudflare` |
+| `CF_ACCOUNT_ID` | (empty) | Cloudflare mode: required; D1 audit log |
+| `CF_D1_DATABASE_ID` | (empty) | Cloudflare mode: required; D1 audit log |
+| `CF_API_TOKEN` | (empty) | Cloudflare mode: required; D1 audit log |
 | `PACKS` | `charter` | Comma-separated list of pack distributions to load via entry-point discovery |
 | `KEYS_SECRET_NAME` | `charter-keys` | Secret Manager secret holding API keys |
 | `GRANTS_SECRET_NAME` | `charter-grants` | Secret Manager secret holding the email→allow grants map |
