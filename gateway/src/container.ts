@@ -1,0 +1,46 @@
+import { Container } from "@cloudflare/containers";
+import type { Env } from "./index";
+
+export const CORE_URL = "https://charter-core.internal/";
+const PREFIX = "CORE_";
+
+/** Container env = every CORE_* Worker var/secret (prefix stripped) + three fixed values. */
+export function coreEnv(env: Record<string, unknown>, googleClientId: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (k.startsWith(PREFIX) && typeof v === "string") out[k.slice(PREFIX.length)] = v;
+  }
+  out.PORT = "8080";
+  out.CHARTER_BACKEND = "cloudflare";
+  out.GOOGLE_OAUTH_CLIENT_ID = googleClientId;
+  return out;
+}
+
+/** Instance name = hash of the env. A changed secret → a new name → a fresh container. */
+export async function instanceName(vars: Record<string, string>): Promise<string> {
+  const canon = JSON.stringify(Object.keys(vars).sort().map((k) => [k, vars[k]]));
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canon));
+  const hex = [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `core-${hex.slice(0, 16)}`;
+}
+
+export class CharterCore extends Container<Env> {
+  defaultPort = 8080;
+  sleepAfter = "10m";
+  constructor(ctx: DurableObjectState<{}>, env: Env) {
+    super(ctx, env);
+    this.envVars = coreEnv(env as unknown as Record<string, unknown>, env.GOOGLE_CLIENT_ID);
+  }
+}
+
+type CoreEnv = { CHARTER_CORE?: DurableObjectNamespace<CharterCore>; GOOGLE_CLIENT_ID: string };
+
+/** A fetch that targets the container when the binding exists, else the global fetch. */
+export async function coreFetch(env: CoreEnv): Promise<typeof fetch> {
+  const ns = env.CHARTER_CORE;
+  if (!ns) return fetch;
+  const name = await instanceName(coreEnv(env as unknown as Record<string, unknown>, env.GOOGLE_CLIENT_ID));
+  const stub = ns.getByName(name);
+  return ((input: RequestInfo | URL, init?: RequestInit) =>
+    stub.fetch(new Request(input, init))) as typeof fetch;
+}

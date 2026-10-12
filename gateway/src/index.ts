@@ -21,6 +21,8 @@ import OAuthProvider, {
 } from "@cloudflare/workers-oauth-provider";
 
 import { type CoreConfig } from "./core.js";
+import { coreFetch, CORE_URL } from "./container";
+export { CharterCore } from "./container";
 import {
   buildAuthorizeUrl,
   exchangeCode,
@@ -76,7 +78,8 @@ import {
 
 export type Env = {
   OAUTH_KV: KVNamespace;
-  CHARTER_CORE_URL: string;
+  CHARTER_CORE?: DurableObjectNamespace<import("./container").CharterCore>;
+  CHARTER_CORE_URL?: string;
   CHARTER_ALLOWED_DOMAIN: string;
   GOOGLE_CLIENT_ID: string;
   /**
@@ -198,7 +201,7 @@ function googleConfig(env: Env, gatewayUrl: string): GoogleConfig {
 
 function coreConfig(env: Env): CoreConfig {
   return {
-    url: env.CHARTER_CORE_URL,
+    url: env.CHARTER_CORE ? CORE_URL : (env.CHARTER_CORE_URL ?? ""),
     // Same reasoning as clientSecret above: these are `undefined` at runtime
     // when unset, and core.ts treats an empty value as "no such header" — a
     // misconfigured deploy gets a clean rejection from CF Access or core rather
@@ -219,7 +222,11 @@ function coreConfig(env: Env): CoreConfig {
  * JSON-RPC envelope. Resolving it at the request boundary is what makes that
  * status code reachable.
  */
-export function buildServer(env: Env, actorToken: string): McpServer {
+export function buildServer(
+  env: Env,
+  actorToken: string,
+  coreFetchFn: typeof fetch = fetch,
+): McpServer {
   // A fresh server per request: the SDK (>=1.26.0) refuses to reconnect one.
   const server = new McpServer(
     { name: "charter", version: "0.1.0" },
@@ -236,7 +243,7 @@ export function buildServer(env: Env, actorToken: string): McpServer {
     meta?: Record<string, unknown>,
   ) =>
     handleTool(
-      fetch,
+      coreFetchFn,
       coreConfig(env),
       toolName,
       args,
@@ -280,7 +287,7 @@ export function buildServer(env: Env, actorToken: string): McpServer {
     },
     async (uri, variables) => {
       const id = String(variables.id ?? "");
-      const r = await readResult(fetch, coreConfig(env), id, actorToken);
+      const r = await readResult(coreFetchFn, coreConfig(env), id, actorToken);
       if (r.isError) throw new Error(r.text);
       return {
         contents: [{ uri: uri.href, mimeType: "application/json", text: r.text }],
@@ -348,7 +355,7 @@ const apiHandler = {
       return unauthorized();
     }
 
-    return createMcpHandler(buildServer(env, actorToken), { route: "/mcp" })(
+    return createMcpHandler(buildServer(env, actorToken, await coreFetch(env)), { route: "/mcp" })(
       request,
       env,
       ctx,
