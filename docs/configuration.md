@@ -33,6 +33,15 @@ All engine configuration is via environment variables. No config files, no YAML.
 | `IMPROVE_GITHUB_REPO` | (empty) | `owner/name` of the GitHub repo `improve.report` files issues in. Empty disables the verb and the `hint` on failing responses |
 | `IMPROVE_GITHUB_TOKEN` | (empty) | Fine-grained GitHub token with Issues: read and write on that one repo. Nothing else; it must not be able to push code |
 
+## Cloudflare Containers deployment
+
+In this deployment you do not set the variables above on the core. You set each
+one on the gateway Worker with the prefix `CORE_`, for example
+`CORE_ALLOWED_DOMAIN` and `CORE_CF_D1_DATABASE_ID`. The container receives them
+without the prefix. The gateway sets `CHARTER_BACKEND`, `PORT` and
+`GOOGLE_OAUTH_CLIENT_ID` for you. See
+[`deployment/cloudflare.md`](deployment/cloudflare.md) step 6.
+
 ## Plugin (interactive install)
 
 One value, set when installing the Claude Code plugin:
@@ -52,6 +61,6 @@ This keeps the engine's public env-var API small and stable.
 
 | Pack | Config key | Description |
 |---|---|---|
-| BigQuery | `WAREHOUSE_DATASETS` | Datasets exposed (engine setting, shared) |
+| BigQuery | `WAREHOUSE_DATASETS` | Datasets exposed (engine setting, shared). GCP mode only |
 | Airtable | (pack-internal) | Airtable API key, base IDs, table IDs |
 | HubSpot | (pack-internal) | HubSpot portal ID, OAuth tokens |
