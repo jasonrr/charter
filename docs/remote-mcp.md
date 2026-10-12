@@ -75,7 +75,7 @@ boundary instead of a deployment detail.
 | **Writes audit** | never | always |
 | **Verifies identity token** | no (forwards it) | **yes** |
 
-In the Cloudflare Containers deployment the Durable Object is only the container's lifecycle handle; it stores nothing, and a changed secret starts a new instance under a new name.
+In the Cloudflare Containers deployment the Durable Object is only the container's lifecycle handle; it stores no Charter data, and a changed secret starts a new instance under a new name.
 
 **The gateway caches nothing, and that is structural.** An earlier version of
 this table gave it "discovery caching"; it has never had any. §5's stateless
@@ -612,7 +612,7 @@ state or legacy SSE, and the gateway has neither — it holds one credential and
 translates. Construct a fresh `McpServer` per request (SDK ≥1.26.0 guards
 against reconnecting one).
 
-In the Cloudflare Containers deployment the Durable Object is only the container's lifecycle handle; it stores nothing, and a changed secret starts a new instance under a new name.
+In the Cloudflare Containers deployment the Durable Object is only the container's lifecycle handle; it stores no Charter data, and a changed secret starts a new instance under a new name.
 
 ## 6. Sub-projects
 
@@ -735,6 +735,7 @@ build it until something actually needs it.
   `authorizeEndpoint`/`tokenEndpoint`/`clientRegistrationEndpoint`; third-party
   IdP federation is the documented Google path; tools read the caller via
   `getMcpAuthContext()`).
-  In the Cloudflare Containers deployment the Durable Object is only the container's lifecycle handle; it stores nothing, and a changed secret starts a new instance under a new name.
+
+In the Cloudflare Containers deployment the Durable Object is only the container's lifecycle handle; it stores no Charter data, and a changed secret starts a new instance under a new name.
 - Current engine: `src/charter/main.py`, `auth.py`, `actor_auth.py`,
   `settings.py`; proxy `plugin/proxy/charter_mcp.js`.

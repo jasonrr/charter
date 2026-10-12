@@ -1,7 +1,9 @@
 # Deploy on Cloudflare only
 
-This page deploys the whole of Charter with one Cloudflare account. You need no
-GCP project. Three Cloudflare products do the work:
+This page deploys the whole of Charter with one Cloudflare account. The engine
+uses no GCP service. One small exception: the Google sign-in client lives in a
+free Google Cloud project (no billing, no APIs enabled). That project only hosts
+the OAuth client. Three Cloudflare products do the work:
 
 - **Workers** runs the gateway (sign-in, MCP, and `POST /call`).
 - **Containers** runs the core (the Python engine) in the same deploy.
@@ -17,8 +19,9 @@ sleeps after 10 minutes with no traffic.
 - Docker, running on your computer. Wrangler builds the core image locally.
 - Node 20 or later.
 - Python 3.10, 3.11 or 3.12, for the `charter keys` command.
+- A free Google Cloud project, to host the Google OAuth client (step 2).
 
-Log in to Cloudflare:
+Start in the repository root. Install the gateway and log in to Cloudflare:
 
 ```bash
 cd gateway
@@ -34,9 +37,11 @@ You use them in step 6.
 
 ## 3. KV namespace and D1 database
 
-Run these from `gateway/`.
+Run these from `gateway/`. If Wrangler asks to add the binding to your config
+file, answer no. You paste the id yourself.
 
 ```bash
+cd gateway   # skip if you are already in gateway/
 npx wrangler kv namespace create OAUTH_KV
 ```
 
@@ -65,9 +70,11 @@ a token.
 3. Under **Account Resources**, choose your account only.
 4. Create the token and copy it.
 
-Store it as a secret:
+Store it as a secret. Before the first deploy, Wrangler offers to create the
+Worker for the secret. Answer yes.
 
 ```bash
+cd gateway   # skip if you are already in gateway/
 npx wrangler secret put CORE_CF_API_TOKEN
 ```
 
@@ -86,14 +93,17 @@ schedule, for example with `npx wrangler d1 export charter-audit --remote
 
 ## 5. API key and grants
 
-Run these from the repository root, in a Python virtualenv:
+Run these from the repository root. Install Charter from a clone, in a Python
+virtualenv:
 
 ```bash
+cd ..   # to the repository root; if you have no clone yet:
+        # git clone https://github.com/jasonrr/charter.git && cd charter
 python3.11 -m venv .venv && source .venv/bin/activate
-pip install "git+https://github.com/jasonrr/charter.git"
+pip install -e .
 ```
 
-Make a key. The command needs only the `CHARTER_BACKEND` variable:
+Make a key (still in the repository root). The command needs only the `CHARTER_BACKEND` variable:
 
 ```bash
 CHARTER_BACKEND=cloudflare charter keys add --name first-agent --allow "verbs.*,identity.*"
@@ -109,6 +119,11 @@ Added key for first-agent (digest: sha256:9f2c…)
   Key (save this — it will not be shown again): Qk3v…
 ```
 
+`charter-keys.json` is the source of truth for the key map. Each `charter keys`
+command changes this file. If you lose it, or start a new one and push it, all
+earlier keys stop working. It holds only digests, so keep it safe, but it does
+not hold a usable key.
+
 Push the file as a secret:
 
 ```bash
@@ -120,6 +135,7 @@ Next, make the grants file. It says which verbs each person can call after
 Google sign-in (see [`grants.md`](grants.md)). From the repository root:
 
 ```bash
+cd ..   # to the repository root
 cat > charter-grants.json <<'JSON'
 {"you@example.com": {"allow": ["verbs.*", "identity.*"]}}
 JSON
@@ -135,7 +151,8 @@ commit them.
 Set these in `gateway/wrangler.jsonc`, under `vars`. They are the same as in
 [`gateway.md`](gateway.md) step 4, with these changes: `CF_ACCESS_CLIENT_ID`,
 `CF_ACCESS_CLIENT_SECRET` and `CHARTER_CORE_URL` are for a GCP origin. Do not
-set them here.
+set the two secrets here. Leave `CHARTER_CORE_URL` as it is in
+`wrangler.jsonc`; it is ignored when the `CHARTER_CORE` binding exists.
 
 | Variable | Example | Note |
 |---|---|---|
@@ -149,6 +166,7 @@ set them here.
 Set these secrets:
 
 ```bash
+cd gateway   # skip if you are already in gateway/
 npx wrangler secret put GOOGLE_CLIENT_SECRET
 npx wrangler secret put OAUTH_STATE_SECRET      # for example: openssl rand -base64 32
 ```
@@ -157,8 +175,8 @@ Set `CHARTER_API_KEY` only if `gateway.md` says you need it. Normally leave it
 unset.
 
 The core container reads its settings from every Worker variable and secret
-whose name starts with `CORE_`. Wrangler removes the prefix. `CORE_PACKS`
-becomes `PACKS` inside the container. The gateway also sets
+whose name starts with `CORE_`. The gateway removes the prefix when it starts
+the container. `CORE_PACKS` becomes `PACKS` inside the container. The gateway also sets
 `CHARTER_BACKEND=cloudflare` and `GOOGLE_OAUTH_CLIENT_ID` for the container, so
 you do not set them.
 
@@ -180,23 +198,34 @@ Core secrets (you set the first three in steps 4 and 5):
 - `CORE_CF_API_TOKEN`
 
 A pack setting from [`../configuration.md`](../configuration.md) "Pack-specific"
-goes in as `CORE_<NAME>`. Example: `"CORE_WAREHOUSE_DATASETS": "sales,support"`.
+goes in as `CORE_<NAME>`, with `<NAME>` the setting's name in that table.
+Use a variable for a plain value and a secret for a token. The reference
+`bigquery` and `gdrive` packs work in GCP mode only (section 10).
 
 ## 7. Deploy
 
 Docker must be running.
 
 ```bash
+cd gateway   # skip if you are already in gateway/
 npx wrangler deploy
 ```
 
 Wrangler builds the core image, pushes it, and publishes the Worker. Note the
-Worker URL in the output. If it is not the value you put in
-`CHARTER_GATEWAY_URL` (and `CORE_CHARTER_GATEWAY_URL`), fix both values and run
-`npx wrangler deploy` again. Sign-in refuses to run when they do not match.
+Worker URL in the output, for example
+`https://charter-gateway.acme.workers.dev`. If it is not the value you put in
+`CHARTER_GATEWAY_URL` and `CORE_CHARTER_GATEWAY_URL`, do all three of these:
 
-After the first deploy, wait a few minutes before the first call. Cloudflare
-needs this time to prepare the container.
+1. In the Google OAuth client, add `https://charter-gateway.acme.workers.dev/callback`
+   to the authorized redirect URIs. Without it, sign-in fails with no clear
+   error (see [`gateway.md`](gateway.md) step 1).
+2. Set `CHARTER_GATEWAY_URL` and `CORE_CHARTER_GATEWAY_URL` to the real origin.
+3. Run `npx wrangler deploy` again.
+
+Sign-in refuses to run when the gateway URL does not match the real origin.
+
+After the first deploy, wait before the first call: Cloudflare needs time to
+prepare the container. Wait time: measured after the live smoke test.
 
 To check the configuration without building the image, run
 `npx wrangler deploy --dry-run --containers-rollout=none`. Without
@@ -205,7 +234,8 @@ To check the configuration without building the image, run
 ## 8. Smoke test
 
 ```bash
-curl -s -X POST https://charter.example.com/call \
+# use your Worker URL, or your custom domain if you have one
+curl -s -X POST https://charter-gateway.acme.workers.dev/call \
   -H 'X-API-Key: Qk3v…' \
   -H 'Content-Type: application/json' \
   -d '{"verb":"verbs.list"}'
@@ -214,6 +244,7 @@ curl -s -X POST https://charter.example.com/call \
 Expected: `"ok": true` and a list of verbs. Then read the audit row:
 
 ```bash
+cd gateway   # skip if you are already in gateway/
 npx wrangler d1 execute charter-audit --remote \
   --command "select ts, actor, verb, result from audit order by ts desc limit 3"
 ```
@@ -234,14 +265,22 @@ Long verbs: measured ceiling recorded after the live smoke test.
 
 ## 9. Operations
 
-**Rotate a secret.** Run `npx wrangler secret put CORE_CHARTER_KEYS` (or any
-other `CORE_` secret). The next request starts a new container with the new
-values, which takes 1 to 3 seconds. From that request on, the old key does not
-work. To revoke a key, run `CHARTER_BACKEND=cloudflare charter keys revoke
---name first-agent`, then push the file again.
+**Rotate a secret.** From `gateway/`, run `npx wrangler secret put CORE_CHARTER_KEYS`
+(or any other `CORE_` secret). The next request starts a new container with
+the new values. Start time: measured after the live smoke test. From that
+request on, the old key does not work.
+
+**Revoke a key.** From the repository root, with the virtualenv active:
+
+```bash
+CHARTER_BACKEND=cloudflare charter keys revoke --name first-agent
+cd gateway
+npx wrangler secret put CORE_CHARTER_KEYS < ../charter-keys.json
+```
 
 **Cold start.** After 10 minutes with no requests, the container sleeps. The
-next request takes 1 to 3 seconds longer.
+next request takes longer. Cold-start time: measured after the live smoke
+test.
 
 **Audit table.** `AUDIT_TABLE` does not apply here. The D1 table is always
 named `audit`.
@@ -250,6 +289,9 @@ named `audit`.
 each wrong request can wake the container, which you pay for. Add a rate limit
 in the dashboard: **Security**, **WAF**, **Rate limiting rules**. Example: when
 the URI path equals `/call`, allow 60 requests per minute for each IP address.
+WAF rules apply only to a custom domain in a zone you own. If you use only the
+`workers.dev` address, you cannot add this rule; use a custom domain for the
+gateway if you need it.
 
 ## 10. What stays on GCP
 
