@@ -183,7 +183,7 @@ async function readCapped(
  * rule again before writing the value — this copy stops a malformed one
  * becoming a header, not a trusted one becoming a row.
  */
-const TRACEPARENT = /^00-(?!0{32}-)[0-9a-f]{32}-(?!0{16}-)[0-9a-f]{16}-[0-9a-f]{2}$/;
+export const TRACEPARENT = /^00-(?!0{32}-)[0-9a-f]{32}-(?!0{16}-)[0-9a-f]{16}-[0-9a-f]{2}$/;
 
 export async function callCore(
   fetchImpl: typeof fetch,

@@ -20,7 +20,7 @@ import OAuthProvider, {
   type OAuthProviderOptions,
 } from "@cloudflare/workers-oauth-provider";
 
-import { type CoreConfig } from "./core.js";
+import { type CoreConfig, TRACEPARENT } from "./core.js";
 import { coreFetch, CORE_URL } from "./container";
 export { CharterCore } from "./container";
 import {
@@ -872,6 +872,35 @@ const authHandler = {
           "X-Frame-Options": "DENY",
         },
       });
+    }
+
+    // Headless passthrough for n8n/cron: a container has no public URL, so the
+    // gateway forwards API-key calls. Only X-API-Key and traceparent cross over
+    // (never X-Actor-Token: docs/remote-mcp.md §4.1).
+    if (url.pathname === "/call" && env.CHARTER_CORE) {
+      const json = (body: unknown, status: number) =>
+        new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+      if (request.method !== "POST") return json({ ok: false, error: "method_not_allowed" }, 405);
+      const key = request.headers.get("X-API-Key");
+      if (!key) return json({ ok: false, error: "unauthorized" }, 401);
+      const MAX_BODY = 1_048_576;
+      if (Number(request.headers.get("content-length") ?? "0") > MAX_BODY) {
+        return json({ ok: false, error: "too_large" }, 413);
+      }
+      // The header is advisory (chunked requests carry none): cap the bytes read.
+      const body = await request.arrayBuffer();
+      if (body.byteLength > MAX_BODY) return json({ ok: false, error: "too_large" }, 413);
+      const headers: Record<string, string> = { "Content-Type": "application/json", "X-API-Key": key };
+      const tp = request.headers.get("traceparent");
+      if (tp && TRACEPARENT.test(tp)) headers["traceparent"] = tp;
+      try {
+        const f = await coreFetch(env);
+        const res = await f(CORE_URL, { method: "POST", headers, body });
+        return new Response(res.body, { status: res.status, headers: { "Content-Type": "application/json" } });
+      } catch (e) {
+        console.error("core unavailable", (e as Error).message);
+        return json({ ok: false, error: "core_unavailable" }, 502);
+      }
     }
 
     // "/" identifies the deployment to a human who lands on it. Everything
