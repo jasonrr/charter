@@ -24,10 +24,10 @@ def _post(body, monkeypatch):
 
 
 @pytest.mark.parametrize("body", [{"success": True, "result": []}, {"success": True},
-                                  {"success": True, "result": [{}]}, {"success": True, "result": None}])
+                                  {"success": True, "result": [{}]}, {"success": True, "result": None}, ["not", "a", "dict"]])
 def test_success_without_rows_raises(cf, monkeypatch, body):
     _post(body, monkeypatch)
-    with pytest.raises(Exception):
+    with pytest.raises(RuntimeError):            # RuntimeError, so the CLI prints "D1: ..." not a traceback
         d1.get_map("keys")
 
 

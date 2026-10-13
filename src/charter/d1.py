@@ -34,12 +34,15 @@ def query(sql, params=(), *, creds=None):
         body = r.json() if r.content else {}
     except ValueError:
         body = {}
-    if not r.ok or not body.get("success"):
-        raise RuntimeError(f"d1 query failed: HTTP {r.status_code} {body.get('errors')}")
+    if not isinstance(body, dict) or not r.ok or not body.get("success"):
+        raise RuntimeError(f"d1 query failed: HTTP {r.status_code} {body.get('errors') if isinstance(body, dict) else body!r}")
     # Strict on the shape: a "success" body without rows must raise, not read as
     # an empty result -- for secret_map an empty result means "no row", which
     # falls back to the env map.
-    return body["result"][0]["results"]
+    try:
+        return body["result"][0]["results"]
+    except (LookupError, TypeError) as e:
+        raise RuntimeError(f"d1 query failed: unexpected response shape ({e!r})") from e
 
 
 def get_map(name, *, creds=None):
