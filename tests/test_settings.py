@@ -227,3 +227,18 @@ def test_unknown_backend_rejected(monkeypatch):
     monkeypatch.setenv("CHARTER_BACKEND", "aws")
     with pytest.raises(Exception):
         Settings(_env_file=None)
+
+
+def test_backend_empty_means_gcp(monkeypatch):
+    _set_required(monkeypatch)
+    monkeypatch.setenv("CHARTER_BACKEND", "")
+    assert Settings(_env_file=None).charter_backend == "gcp"
+
+
+def test_backend_is_normalised(monkeypatch):
+    _set_required(monkeypatch)
+    monkeypatch.delenv("GCP_PROJECT", raising=False)
+    monkeypatch.setenv("CHARTER_BACKEND", " Cloudflare ")
+    for k, v in (("CF_ACCOUNT_ID", "a"), ("CF_D1_DATABASE_ID", "d"), ("CF_API_TOKEN", "t")):
+        monkeypatch.setenv(k, v)
+    assert Settings(_env_file=None).charter_backend == "cloudflare"

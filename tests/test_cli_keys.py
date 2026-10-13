@@ -112,3 +112,10 @@ def test_file_mode_non_object_file_exits_1(tmp_path, monkeypatch, capsys, conten
         keys._add("a", "api", ["*"])
     assert e.value.code == 1
     assert f"KEYS_FILE {tmp_path / 'keys.json'} is not a JSON object" in capsys.readouterr().err
+
+
+def test_file_mode_backend_is_normalised(tmp_path, monkeypatch):
+    _file_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("CHARTER_BACKEND", "Cloudflare")
+    keys._add("a", "api", ["*"])
+    assert (tmp_path / "keys.json").exists()

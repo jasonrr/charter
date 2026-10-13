@@ -82,7 +82,8 @@ class Settings(BaseSettings):
         # field is missing, and the boot error must still name gcp_project.
         if not isinstance(values, dict):
             return values
-        backend = values.get("charter_backend", "gcp")
+        backend = (values.get("charter_backend") or "gcp").strip().lower()
+        values["charter_backend"] = backend
         if backend == "gcp":
             if not values.get("gcp_project"):
                 raise ValueError("gcp_project (GCP_PROJECT) is required when CHARTER_BACKEND=gcp")

@@ -35,7 +35,7 @@ def _secret_path(name):
 
 def _file_mode():
     # Read env directly, like _mint: the CLI must work before engine config exists.
-    return os.environ.get("CHARTER_BACKEND", "gcp") == "cloudflare"
+    return (os.environ.get("CHARTER_BACKEND") or "gcp").strip().lower() == "cloudflare"
 
 
 def _keys_file():
