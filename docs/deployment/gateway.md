@@ -67,6 +67,10 @@ Core re-reads the secret within ~60s, or immediately on `admin.reload_keys`.
 > `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET` and `CHARTER_CORE_URL` apply to a
 > GCP origin only. To run the core as a Cloudflare Container, see
 > [`cloudflare.md`](cloudflare.md).
+>
+> **GCP origin: delete the `containers`, `durable_objects` and `migrations`
+> blocks from `wrangler.jsonc`.** With them present the gateway runs core in a
+> Cloudflare Container and ignores `CHARTER_CORE_URL`.
 
 Requires `wrangler` **4.x or later** — `gateway/package.json` pins `4.107.0`.
 Wrangler 3's bundled `workerd` predates `cloudflare:email`, which the `agents`

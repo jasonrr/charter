@@ -44,6 +44,8 @@
     //   }
     "CHARTER_CONNECT_PROVIDERS": {}
   },
+  // GCP origin: delete `containers`, `durable_objects` and `migrations`. With them present
+  // the gateway runs core in a Cloudflare Container and ignores CHARTER_CORE_URL.
   "containers": [{
     "class_name": "CharterCore",
     "image": "../Dockerfile",
