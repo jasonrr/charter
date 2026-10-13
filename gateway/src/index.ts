@@ -898,6 +898,12 @@ const authHandler = {
       try {
         const f = await coreFetch(env);
         const res = await f(CORE_URL, { method: "POST", headers, body });
+        // Core answers every request with JSON; a non-JSON 5xx is the container
+        // platform (instance cap, failed start), not core.
+        if (res.status >= 500 && !(res.headers.get("Content-Type") ?? "").includes("json")) {
+          console.error("core unavailable", res.status, (await res.text()).slice(0, 200));
+          return json({ ok: false, error: "core_unavailable" }, 502);
+        }
         const out: Record<string, string> = { "Content-Type": res.headers.get("Content-Type") ?? "application/json" };
         const retry = res.headers.get("Retry-After");
         if (retry) out["Retry-After"] = retry;

@@ -47,6 +47,20 @@ describe("POST /call", () => {
     const boom = { getByName: () => ({ fetchWithEnv: async () => { throw new Error("no container"); } }) } as unknown as Env["CHARTER_CORE"];
     expect((await call(envWith({ CHARTER_CORE: boom }), { method: "POST", body: "{}", headers: { "X-API-Key": "k" } })).status).toBe(502);
   });
+  it("502 when the container platform answers with a non-JSON 5xx; core's own JSON 5xx passes through", async () => {
+    const answering = (res: () => Response) =>
+      ({ getByName: () => ({ fetchWithEnv: async () => res() }) }) as unknown as Env["CHARTER_CORE"];
+    const capped = await call(envWith({ CHARTER_CORE: answering(() => new Response(
+      "Failed to start container: Maximum number of running container instances exceeded.", { status: 500 })) }),
+      { method: "POST", body: "{}", headers: { "X-API-Key": "k" } });
+    expect(capped.status).toBe(502);
+    expect(await capped.json()).toEqual({ ok: false, error: "core_unavailable" });
+    const coreErr = await call(envWith({ CHARTER_CORE: answering(() => new Response('{"ok":false,"error":"internal"}',
+      { status: 500, headers: { "Content-Type": "application/json" } })) }),
+      { method: "POST", body: "{}", headers: { "X-API-Key": "k" } });
+    expect(coreErr.status).toBe(500);
+    expect(await coreErr.text()).toBe('{"ok":false,"error":"internal"}');
+  });
   it("413 on the actual body when there is no content-length (chunked)", async () => {
     const { ns, seen } = fakeCore();
     const big = new Uint8Array(1_048_577).fill(97);
