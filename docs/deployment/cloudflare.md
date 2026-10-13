@@ -156,9 +156,18 @@ ignores it.
 
 **Size.** A Worker secret holds at most 5.1 kB, which is about 20 grants or 19
 keys. That is why the maps live in D1 (2 MB per row) and not in `CORE_CHARTER_KEYS`
-/ `CORE_CHARTER_GRANTS`. Those two variables still work as a cold-start fallback
-when D1 is unreachable, and as the map itself while the `config` row does not
-exist yet (a deployment from before the table). Keep them small or unset.
+/ `CORE_CHARTER_GRANTS`. Leave those two unset on a new deployment.
+
+**Moving an existing deployment** (one that serves `CORE_CHARTER_KEYS` /
+`CORE_CHARTER_GRANTS`): while the `config` row does not exist the core keeps
+serving the variable, so nothing changes until you push. The first `charter
+keys` command starts the row from `CHARTER_KEYS` if that is set in your shell
+or `.env` -- export the same JSON you gave the secret, or the first `add`
+starts from an empty map and every existing key stops working within 60 s.
+Then push the grants file, and **delete both secrets**: `npx wrangler secret
+delete CORE_CHARTER_KEYS` and `... CORE_CHARTER_GRANTS`. While they exist, a
+container that cold-starts during a D1 outage serves that stale copy, so a key
+revoked in D1 works again until D1 is back.
 
 ## 6. Gateway configuration
 
@@ -219,8 +228,8 @@ Core secrets (you set the first in step 4; the other two are optional, see the
 size note in step 5):
 
 - `CORE_CF_API_TOKEN`
-- `CORE_CHARTER_KEYS` (fallback only)
-- `CORE_CHARTER_GRANTS` (fallback only)
+- `CORE_CHARTER_KEYS`, `CORE_CHARTER_GRANTS`: only on a deployment from before
+  the `config` table, and deleted once the rows exist
 
 A pack setting from [`../configuration.md`](../configuration.md) "Pack-specific"
 goes in as `CORE_<NAME>`, with `<NAME>` the setting's name in that table.
@@ -295,9 +304,10 @@ Long verbs: a verb that ran 150 seconds returned normally in the live smoke test
 write D1 directly. Every core container re-reads the rows within 60 seconds;
 call `admin.reload_keys` to make it immediate. No deploy, no container restart.
 Until then a revoked key can still work. A D1 outage keeps the last-good maps in
-memory; a container that cold-starts during one falls back to
-`CORE_CHARTER_KEYS` / `CORE_CHARTER_GRANTS` (empty maps if unset: locked out,
-never permissive).
+memory; a container that cold-starts during one is locked out (empty maps)
+unless `CORE_CHARTER_KEYS` / `CORE_CHARTER_GRANTS` still exist, in which case it
+serves that stale copy. Never permissive, but that is why step 5 says to delete
+them. A row that holds `null` or is not a JSON object is also an empty map.
 
 **Rotate a secret.** From `gateway/`, run `npx wrangler secret put CORE_CF_API_TOKEN`
 (or any other `CORE_` secret). The next request starts a new container with

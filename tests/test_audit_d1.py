@@ -36,7 +36,7 @@ def test_d1_insert_shape(cf, monkeypatch):
 
     def post(url, headers=None, json=None, timeout=None):
         calls.append((url, headers, json))
-        return _Resp(200, {"success": True, "result": []})
+        return _Resp(200, {"success": True, "result": [{"results": []}]})
 
     monkeypatch.setattr(d1.requests, "post", post)
     audit.record({"name": "k", "interface": "api"}, "verbs.list", None, "ok", rid="r1")
@@ -82,7 +82,7 @@ def test_d1_schema_matches_row_columns(cf, monkeypatch):
     calls = []
     monkeypatch.setattr(d1.requests, "post",
                         lambda url, headers=None, json=None, timeout=None:
-                        calls.append(json) or _Resp(200, {"success": True}))
+                        calls.append(json) or _Resp(200, {"success": True, "result": [{"results": []}]}))
     audit.begin_trace("00-" + "a" * 32 + "-" + "b" * 16 + "-01")
     try:
         audit.record({"name": "k", "interface": "api"}, "v", "t", "ok", rid="r",

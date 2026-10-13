@@ -12,7 +12,7 @@ import pathlib
 import sys
 
 from charter import d1
-from charter.cli.keys import _d1_creds, _die, _cloudflare_mode
+from charter.cli.keys import _cloudflare_mode, _d1_creds, _die, run
 from charter.secret_map import allow_list
 
 
@@ -23,6 +23,9 @@ def _push(path):
         _die(f"{path}: {e}")
     if not isinstance(grants, dict):
         _die(f"{path} is not a JSON object")
+    if not grants:
+        # A truncated or wrong file must not silently remove everyone's access.
+        _die(f"{path} is empty; refusing to replace the grants map with nothing")
     # Same validation the engine applies per lookup; here it fails the push
     # instead of silently locking one person out.
     bad = [email for email, rec in grants.items() if allow_list(rec, "charter grants", email) is None]
@@ -33,7 +36,10 @@ def _push(path):
 
 
 def _show():
-    print(json.dumps(d1.get_map("grants", creds=_d1_creds()) or {}, indent=2))
+    grants = d1.get_map("grants", creds=_d1_creds())
+    if grants is None:
+        print("no grants row in D1: the core is serving CORE_CHARTER_GRANTS", file=sys.stderr)
+    print(json.dumps(grants or {}, indent=2))
 
 
 def main(argv=None):
@@ -47,4 +53,4 @@ def main(argv=None):
     push.set_defaults(func=lambda a: _push(a.file))
     sub.add_parser("show", help="Print the live grants map").set_defaults(func=lambda _a: _show())
     args = parser.parse_args(argv)
-    args.func(args)
+    run(args.func, args)

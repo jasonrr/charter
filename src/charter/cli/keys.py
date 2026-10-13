@@ -19,7 +19,8 @@ import os
 import secrets
 import sys
 
-from dotenv import load_dotenv
+import requests
+from dotenv import find_dotenv, load_dotenv
 from google.cloud import secretmanager
 
 from charter import d1
@@ -39,6 +40,9 @@ def _secret_path(name):
 
 def _cloudflare_mode():
     # Read env directly, like _mint: the CLI must work before engine config exists.
+    # .env from the CURRENT directory (find_dotenv's default walks up from this
+    # file, which is wrong for a tool/site-packages install); never overrides env.
+    load_dotenv(find_dotenv(usecwd=True))
     return (os.environ.get("CHARTER_BACKEND") or "gcp").strip().lower() == "cloudflare"
 
 
@@ -48,9 +52,8 @@ def _die(msg):
 
 
 def _d1_creds():
-    # Env (or .env, like Settings) rather than get_settings(): the CLI must work
-    # without the engine's required config.
-    load_dotenv()
+    # Env (or .env, loaded by _cloudflare_mode) rather than get_settings(): the
+    # CLI must work without the engine's required config.
     missing = [n for n in _CF_VARS if not os.environ.get(n)]
     if missing:
         _die(f"CHARTER_BACKEND=cloudflare: set {', '.join(missing)}")
@@ -60,17 +63,30 @@ def _d1_creds():
 def _fetch_keys(create=False):
     """Read the current key map from Secret Manager (same secret the engine reads).
 
-    Cloudflare mode: the D1 row. No row is an error unless `create` (only `add`
-    starts a new map; once the row exists the core stops reading CORE_CHARTER_KEYS).
+    Cloudflare mode: the D1 row. While there is no row the core serves
+    CHARTER_KEYS (the CORE_CHARTER_KEYS secret), so a missing row starts from
+    that same map when the operator exports it -- otherwise the first `add`
+    would lock every existing key out the moment the row appeared.
     """
     if _cloudflare_mode():
         keys = d1.get_map("keys", creds=_d1_creds())
         if keys is None:
-            if not create:
-                _die("no keys row in D1 yet; `charter keys add` creates it")
-            print("no keys row in D1: starting a new key map. Once it exists the core "
-                  "ignores CORE_CHARTER_KEYS.", file=sys.stderr)
-            return {}
+            try:
+                keys = json.loads(os.environ.get("CHARTER_KEYS") or "{}")
+            except ValueError:
+                _die("CHARTER_KEYS is not valid JSON")
+            if not isinstance(keys, dict):
+                _die("CHARTER_KEYS is not a JSON object")
+            if keys:
+                print(f"no keys row in D1: seeding from CHARTER_KEYS ({len(keys)} key(s)). "
+                      "Once the row exists the core ignores CORE_CHARTER_KEYS.", file=sys.stderr)
+            elif not create:
+                _die("no keys row in D1 yet; `charter keys add` creates it (export "
+                     "CHARTER_KEYS first to carry existing keys over)")
+            else:
+                print("no keys row in D1: starting a new key map. Once it exists the core "
+                      "ignores CORE_CHARTER_KEYS.", file=sys.stderr)
+            return keys
         if not isinstance(keys, dict):
             _die("D1 config row 'keys' is not a JSON object")
         return keys
@@ -220,7 +236,15 @@ def main(argv=None):
         func=lambda a: _mint(a.name, a.interface, a.allow.split(","), a.require_actor))
 
     args = parser.parse_args(argv)
-    args.func(args)
+    run(args.func, args)
+
+
+def run(func, args):
+    """A D1 failure is an operator-facing message, not a traceback."""
+    try:
+        func(args)
+    except (RuntimeError, requests.RequestException, ValueError) as e:
+        _die(f"D1: {e}")
 
 
 if __name__ == "__main__":

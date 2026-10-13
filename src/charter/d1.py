@@ -36,13 +36,23 @@ def query(sql, params=(), *, creds=None):
         body = {}
     if not r.ok or not body.get("success"):
         raise RuntimeError(f"d1 query failed: HTTP {r.status_code} {body.get('errors')}")
-    return (body.get("result") or [{}])[0].get("results") or []
+    # Strict on the shape: a "success" body without rows must raise, not read as
+    # an empty result -- for secret_map an empty result means "no row", which
+    # falls back to the env map.
+    return body["result"][0]["results"]
 
 
 def get_map(name, *, creds=None):
-    """The JSON map stored under `name` in `config`, or None if there is no row."""
+    """The JSON map stored under `name` in `config`, or None if there is no row.
+
+    A row that exists but holds JSON `null` is `{}` (locked out), never None:
+    None is reserved for the no-row case the env fallback keys on.
+    """
     rows = query("SELECT value FROM config WHERE name = ?", [name], creds=creds)
-    return json.loads(rows[0]["value"]) if rows else None
+    if not rows:
+        return None
+    value = json.loads(rows[0]["value"])
+    return {} if value is None else value
 
 
 def put_map(name, value, *, creds=None):

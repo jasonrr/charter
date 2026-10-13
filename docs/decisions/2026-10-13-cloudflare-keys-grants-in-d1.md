@@ -10,9 +10,12 @@ real team cutover. `--dry-run` and tests never see it.
 **Decision.** The D1 database cloudflare mode already requires gets a `config`
 table, one JSON row per map (`keys`, `grants`; 2 MB per row). `secret_map` reads
 the row in place of Secret Manager, same 60 s TTL, same last-good and env
-fallback; a missing row means the env var is the map (back-compat). `charter
-keys` writes the row directly; `charter grants push` replaces it. Rotation no
-longer restarts the container.
+fallback; a missing row means the env var is the map (back-compat), and the
+first `charter keys` command seeds the row from `CHARTER_KEYS` so migration does
+not drop live keys. `charter keys` writes the row directly; `charter grants
+push` replaces it (and refuses an empty map). Rotation no longer restarts the
+container. Operators delete the two secrets after migrating: while they exist a
+cold start during a D1 outage serves them, stale.
 
 **Not chosen.** Workers KV: the container cannot use bindings, so it would be a
 second REST client for nothing. Grants baked into the image: a grant edit would

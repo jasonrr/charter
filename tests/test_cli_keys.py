@@ -68,6 +68,7 @@ def _d1_env(monkeypatch, store):
         monkeypatch.setenv(n, "x")
     for k in ("GCP_PROJECT", "GOOGLE_OAUTH_CLIENT_ID", "ALLOWED_DOMAIN"):
         monkeypatch.delenv(k, raising=False)           # the CLI must not need engine config
+    monkeypatch.delenv("CHARTER_KEYS", raising=False)
     monkeypatch.setattr(keys, "_sm_client", lambda: (_ for _ in ()).throw(AssertionError("no SM")))
     monkeypatch.setattr(keys.d1, "get_map", lambda name, creds: store.get(name))
     monkeypatch.setattr(keys.d1, "put_map", lambda name, value, creds: store.__setitem__(name, value))
@@ -99,10 +100,43 @@ def test_cloudflare_mode_missing_row_exits_1(monkeypatch, capsys, argv):
     assert store == {}
 
 
+def test_cloudflare_mode_seeds_from_charter_keys_when_no_row(monkeypatch, capsys):
+    # The migration path: a deployment serving CORE_CHARTER_KEYS runs its first
+    # `charter keys add` -- the existing keys must land in the row, not be dropped.
+    store = {}
+    _d1_env(monkeypatch, store)
+    monkeypatch.setenv("CHARTER_KEYS", '{"sha256:old": {"name": "ci", "interface": "api", "allow": ["*"]}}')
+    keys.main(["keys", "list"])                                # readable before any row
+    assert "sha256:old: ci" in capsys.readouterr().out
+    keys._add("new", "api", ["*"])
+    assert "sha256:old" in store["keys"] and len(store["keys"]) == 2
+    assert "seeding from CHARTER_KEYS (1 key(s))" in capsys.readouterr().err
+
+
+def test_cloudflare_mode_reads_dotenv_from_cwd(tmp_path, monkeypatch):
+    for n in ("CHARTER_BACKEND", "CF_ACCOUNT_ID", "CF_D1_DATABASE_ID", "CF_API_TOKEN"):
+        monkeypatch.setenv(n, "x")       # record the original so teardown removes
+        monkeypatch.delenv(n)            # what load_dotenv is about to set
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("CHARTER_BACKEND=cloudflare\nCF_ACCOUNT_ID=a\nCF_D1_DATABASE_ID=d\nCF_API_TOKEN=t\n")
+    assert keys._cloudflare_mode()                             # .env, not only the shell env
+    assert keys._d1_creds() == ("a", "d", "t")
+
+
+def test_cloudflare_mode_d1_error_is_a_message_not_a_traceback(monkeypatch, capsys):
+    _d1_env(monkeypatch, {})
+    def boom(name, creds): raise RuntimeError("d1 query failed: HTTP 403 [{'code': 10000}]")
+    monkeypatch.setattr(keys.d1, "get_map", boom)
+    with pytest.raises(SystemExit) as e:
+        keys.main(["keys", "list"])
+    assert e.value.code == 1
+    assert "D1: d1 query failed: HTTP 403" in capsys.readouterr().err
+
+
 def test_cloudflare_mode_missing_cf_vars_exits_1(monkeypatch, capsys):
     monkeypatch.setenv("CHARTER_BACKEND", "Cloudflare")      # backend is normalised
     monkeypatch.delenv("CF_API_TOKEN", raising=False)
-    monkeypatch.setattr(keys, "load_dotenv", lambda: None)
+    monkeypatch.setattr(keys, "load_dotenv", lambda *_a: None)
     monkeypatch.setenv("CF_ACCOUNT_ID", "x")
     monkeypatch.setenv("CF_D1_DATABASE_ID", "x")
     with pytest.raises(SystemExit) as e:
@@ -120,6 +154,11 @@ def test_grants_push_validates_then_writes_the_row(tmp_path, monkeypatch, capsys
     with pytest.raises(SystemExit):
         grants.main(["push", str(f)])
     assert "malformed entry for a@example.com" in capsys.readouterr().err
+    assert store == {}
+    f.write_text('{}')
+    with pytest.raises(SystemExit):
+        grants.main(["push", str(f)])
+    assert "refusing to replace the grants map with nothing" in capsys.readouterr().err
     assert store == {}
     f.write_text('{"a@example.com": {"allow": ["verbs.*"]}}')
     grants.main(["push", str(f)])
