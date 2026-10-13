@@ -49,7 +49,7 @@
     "image": "../Dockerfile",
     "image_build_context": "..",
     "instance_type": "basic",
-    "max_instances": 2 // old + new instance overlap for <= sleepAfter after a secret change
+    "max_instances": 3 // live envs at once: each secret change starts a new instance; old ones sleep after 10m
   }],
   "durable_objects": { "bindings": [{ "name": "CHARTER_CORE", "class_name": "CharterCore" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CharterCore"] }],
