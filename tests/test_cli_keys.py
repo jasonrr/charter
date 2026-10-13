@@ -106,11 +106,14 @@ def test_cloudflare_mode_seeds_from_charter_keys_when_no_row(monkeypatch, capsys
     store = {}
     _d1_env(monkeypatch, store)
     monkeypatch.setenv("CHARTER_KEYS", '{"sha256:old": {"name": "ci", "interface": "api", "allow": ["*"]}}')
-    keys.main(["keys", "list"])                                # readable before any row
-    assert "sha256:old: ci" in capsys.readouterr().out
+    keys.main(["keys", "list"])                                # the first command seeds the row
+    assert store["keys"] == {"sha256:old": {"name": "ci", "interface": "api", "allow": ["*"]}}
+    out, err = capsys.readouterr()
+    assert "sha256:old: ci" in out
+    assert "seeded it from CHARTER_KEYS (1 key(s))" in err
     keys._add("new", "api", ["*"])
     assert "sha256:old" in store["keys"] and len(store["keys"]) == 2
-    assert "seeding from CHARTER_KEYS (1 key(s))" in capsys.readouterr().err
+    assert "seeded" not in capsys.readouterr().err           # the row exists now
 
 
 def test_cloudflare_mode_reads_dotenv_from_cwd(tmp_path, monkeypatch):

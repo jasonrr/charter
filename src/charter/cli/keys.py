@@ -78,8 +78,11 @@ def _fetch_keys(create=False):
             if not isinstance(keys, dict):
                 _die("CHARTER_KEYS is not a JSON object")
             if keys:
-                print(f"no keys row in D1: seeding from CHARTER_KEYS ({len(keys)} key(s)). "
-                      "Once the row exists the core ignores CORE_CHARTER_KEYS.", file=sys.stderr)
+                # Written now, not on the next mutation: `list` is the natural
+                # first command, and the docs promise it starts the row.
+                d1.put_map("keys", keys, creds=_d1_creds())
+                print(f"no keys row in D1: seeded it from CHARTER_KEYS ({len(keys)} key(s)). "
+                      "The core now ignores CORE_CHARTER_KEYS.", file=sys.stderr)
             elif not create:
                 _die("no keys row in D1 yet; `charter keys add` creates it (export "
                      "CHARTER_KEYS first to carry existing keys over)")
