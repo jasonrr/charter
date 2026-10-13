@@ -1,4 +1,5 @@
-"""Key-issuance CLI for Charter: list/add/revoke/rotate against a Secret Manager backend.
+"""Key-issuance CLI for Charter: list/add/revoke/rotate against Secret Manager, or a local
+file (KEYS_FILE) when CHARTER_BACKEND=cloudflare.
 
 Also supports offline mint mode: prints a random key + the exact sha256:
 JSON fragment for env config.
@@ -14,6 +15,7 @@ import argparse
 import hashlib
 import json
 import os
+import pathlib
 import secrets
 import sys
 
@@ -31,15 +33,56 @@ def _secret_path(name):
     return f"projects/{s.gcp_project}/secrets/{name}/versions/latest"
 
 
-def _fetch_keys():
-    """Read the current key map from Secret Manager (same secret the engine reads)."""
+def _file_mode():
+    # Read env directly, like _mint: the CLI must work before engine config exists.
+    return (os.environ.get("CHARTER_BACKEND") or "gcp").strip().lower() == "cloudflare"
+
+
+def _keys_file():
+    return pathlib.Path(os.environ.get("KEYS_FILE", "charter-keys.json"))
+
+
+def _die(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def _fetch_keys(create=False):
+    """Read the current key map from Secret Manager (same secret the engine reads).
+
+    File mode: a missing file is an error unless `create` (only `add` starts a new map).
+    """
+    if _file_mode():
+        p = _keys_file()
+        if not p.exists():
+            if not create:
+                _die(f"KEYS_FILE {p} not found; run from the directory that holds it "
+                     "or set KEYS_FILE")
+            print(f"no {p}: starting a new key map. Pushing it replaces every key "
+                  "already in CORE_CHARTER_KEYS.", file=sys.stderr)
+            return {}
+        try:
+            keys = json.loads(p.read_text())
+        except ValueError:
+            keys = None
+        if not isinstance(keys, dict):
+            _die(f"KEYS_FILE {p} is not a JSON object")
+        return keys
     resp = _sm_client().access_secret_version(
         name=_secret_path(get_settings().keys_secret_name))
     return json.loads(resp.payload.data.decode("utf-8"))
 
 
 def _store_keys(keys):
-    """Write the updated key map back to Secret Manager."""
+    """Write the updated key map back to Secret Manager (digests only, never plaintext keys)."""
+    if _file_mode():
+        p = _keys_file()
+        p.touch(mode=0o600)
+        p.chmod(0o600)
+        p.write_text(json.dumps(keys, indent=2) + "\n")
+        print(f"wrote {p}. Push it with: npx wrangler secret put CORE_CHARTER_KEYS < {p}",
+              file=sys.stderr)
+        return
     s = get_settings()
     parent = f"projects/{s.gcp_project}/secrets/{s.keys_secret_name}"
     _sm_client().add_secret_version(
@@ -56,7 +99,7 @@ def _sha256(key):
 
 
 def _add(name, interface, allow, require_actor=False):
-    keys = _fetch_keys()
+    keys = _fetch_keys(create=True)
     key = _generate_key()
     digest = _sha256(key)
     keys[digest] = {

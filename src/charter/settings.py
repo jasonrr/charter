@@ -14,7 +14,7 @@ sdk.loader) and read values back through sdk.get_config().
 from functools import lru_cache
 from typing import Annotated
 
-from pydantic import SecretStr, field_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -24,8 +24,13 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="allow",
                                       hide_input_in_errors=True)
 
-    # Required engine config — no defaults; startup fails fast when unset.
-    gcp_project: str
+    # Required engine config — startup fails fast when unset. gcp_project is
+    # required only when charter_backend == "gcp" (see _check_backend).
+    gcp_project: str = ""
+    charter_backend: str = "gcp"  # "gcp" | "cloudflare"
+    cf_account_id: str = ""
+    cf_d1_database_id: str = ""
+    cf_api_token: SecretStr = SecretStr("")  # D1 audit log (cloudflare mode)
     google_oauth_client_id: str
     allowed_domain: str
 
@@ -69,6 +74,28 @@ class Settings(BaseSettings):
     dropboxsign_template_id: str = ""
     improve_github_repo: str = ""                    # owner/name; empty disables improve.report
     improve_github_token: SecretStr = SecretStr("")  # fine-grained PAT, issues:write on that one repo
+
+    @model_validator(mode="before")
+    @classmethod
+    def _check_backend(cls, values):
+        # "before" on purpose: an "after" validator is skipped when any required
+        # field is missing, and the boot error must still name gcp_project.
+        if not isinstance(values, dict):
+            return values
+        backend = (values.get("charter_backend") or "gcp").strip().lower()
+        values["charter_backend"] = backend
+        if backend == "gcp":
+            if not values.get("gcp_project"):
+                raise ValueError("gcp_project (GCP_PROJECT) is required when CHARTER_BACKEND=gcp")
+        elif backend == "cloudflare":
+            missing = [n for n, k in (("CF_ACCOUNT_ID", "cf_account_id"),
+                                       ("CF_D1_DATABASE_ID", "cf_d1_database_id"),
+                                       ("CF_API_TOKEN", "cf_api_token")) if not values.get(k)]
+            if missing:
+                raise ValueError(f"CHARTER_BACKEND=cloudflare needs {', '.join(missing)}")
+        else:
+            raise ValueError(f"CHARTER_BACKEND must be 'gcp' or 'cloudflare', got {backend!r}")
+        return values
 
     @field_validator("allowed_domain")
     @classmethod

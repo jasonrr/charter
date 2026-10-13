@@ -13,6 +13,8 @@ audit trails, and actor identity. A verb is a function with a name like
 (adapter module), dispatched by the engine, and called by an AI agent through
 remote MCP (the charter gateway).
 
+Deploys on Cloudflare alone (Workers + Containers + D1) or on GCP Cloud Run.
+
 Charter runs in production at [Radical Candor](https://www.radicalcandor.com),
 which consumes this public engine plus a private pack of its own verbs — the
 same boundary any adopter would use.

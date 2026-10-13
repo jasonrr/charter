@@ -63,7 +63,10 @@ class SecretMap:
                 f"{getattr(s, self.secret_field)}/versions/latest")
 
     def _fetch(self):
-        """Read the latest map from Secret Manager (the live source of truth)."""
+        """Read the latest map from Secret Manager (the live source of truth);
+        in cloudflare mode the env var is the source and Secret Manager is skipped."""
+        if get_settings().charter_backend == "cloudflare":
+            return self._from_env()
         resp = _sm_client().access_secret_version(name=self._secret_path())
         return json.loads(resp.payload.data.decode("utf-8"))
 

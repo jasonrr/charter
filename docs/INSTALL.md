@@ -5,8 +5,9 @@ an agent. Everything else is agent-executable.
 
 ## Prerequisites
 
-- Python 3.10–3.12
-- A Google Cloud project with BigQuery and Secret Manager enabled
+- Python 3.10–3.12, and EITHER a Cloudflare account (`docs/deployment/cloudflare.md`)
+  OR a GCP project with BigQuery and Secret Manager enabled
+  (`docs/deployment/gcp-cloud-run.md`)
 - Claude Code, Claude Desktop, or another Claude surface that speaks remote MCP
 
 ## Step 1: Google OAuth client — created during gateway deployment
@@ -28,17 +29,21 @@ Create and activate a virtualenv first — otherwise an ambient `uv`/`pip` may
 resolve to the nearest project's environment and install there instead:
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
+python3.11 -m venv .venv && source .venv/bin/activate
 pip install "git+https://github.com/jasonrr/charter.git"
 ```
 
 ## Step 3: Configure environment
 
 ```bash
-export GCP_PROJECT=your-project
+export CHARTER_BACKEND=gcp        # or: cloudflare (default: gcp)
+export GCP_PROJECT=your-project   # GCP only
 export GOOGLE_OAUTH_CLIENT_ID=xxx.apps.googleusercontent.com
 export ALLOWED_DOMAIN=@yourdomain.com
 ```
+
+On Cloudflare, `GCP_PROJECT` is not needed. The deployed core gets its settings
+from the gateway's `CORE_*` variables instead (`docs/deployment/cloudflare.md`).
 
 Optional: `PACKS=charter` to load the built-in reference packs (the default).
 
@@ -75,6 +80,11 @@ Store the fragment where the engine reads keys — either of:
   it returns in a second or two if the project rejects the request (a placeholder
   `GCP_PROJECT` gives a fast permission error), or up to ~60s if the project is
   genuinely unreachable at the network level. Either way it's expected.
+
+- **Cloudflare**: `CHARTER_BACKEND=cloudflare charter keys add --name test-agent
+  --allow "data.*,identity.*"` writes `charter-keys.json` (digests only). Push it
+  with `npx wrangler secret put CORE_CHARTER_KEYS < charter-keys.json`
+  (`docs/deployment/cloudflare.md` step 5).
 
 Save the raw key itself — it is shown once and never stored.
 

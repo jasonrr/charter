@@ -20,7 +20,9 @@ import OAuthProvider, {
   type OAuthProviderOptions,
 } from "@cloudflare/workers-oauth-provider";
 
-import { type CoreConfig } from "./core.js";
+import { type CoreConfig, readCapped, TRACEPARENT } from "./core.js";
+import { coreFetch, CORE_URL } from "./container";
+export { CharterCore } from "./container";
 import {
   buildAuthorizeUrl,
   exchangeCode,
@@ -76,7 +78,8 @@ import {
 
 export type Env = {
   OAUTH_KV: KVNamespace;
-  CHARTER_CORE_URL: string;
+  CHARTER_CORE?: DurableObjectNamespace<import("./container").CharterCore>;
+  CHARTER_CORE_URL?: string;
   CHARTER_ALLOWED_DOMAIN: string;
   GOOGLE_CLIENT_ID: string;
   /**
@@ -198,7 +201,7 @@ function googleConfig(env: Env, gatewayUrl: string): GoogleConfig {
 
 function coreConfig(env: Env): CoreConfig {
   return {
-    url: env.CHARTER_CORE_URL,
+    url: env.CHARTER_CORE ? CORE_URL : (env.CHARTER_CORE_URL ?? ""),
     // Same reasoning as clientSecret above: these are `undefined` at runtime
     // when unset, and core.ts treats an empty value as "no such header" — a
     // misconfigured deploy gets a clean rejection from CF Access or core rather
@@ -219,7 +222,11 @@ function coreConfig(env: Env): CoreConfig {
  * JSON-RPC envelope. Resolving it at the request boundary is what makes that
  * status code reachable.
  */
-export function buildServer(env: Env, actorToken: string): McpServer {
+export function buildServer(
+  env: Env,
+  actorToken: string,
+  coreFetchFn: typeof fetch = fetch,
+): McpServer {
   // A fresh server per request: the SDK (>=1.26.0) refuses to reconnect one.
   const server = new McpServer(
     { name: "charter", version: "0.1.0" },
@@ -236,7 +243,7 @@ export function buildServer(env: Env, actorToken: string): McpServer {
     meta?: Record<string, unknown>,
   ) =>
     handleTool(
-      fetch,
+      coreFetchFn,
       coreConfig(env),
       toolName,
       args,
@@ -280,7 +287,7 @@ export function buildServer(env: Env, actorToken: string): McpServer {
     },
     async (uri, variables) => {
       const id = String(variables.id ?? "");
-      const r = await readResult(fetch, coreConfig(env), id, actorToken);
+      const r = await readResult(coreFetchFn, coreConfig(env), id, actorToken);
       if (r.isError) throw new Error(r.text);
       return {
         contents: [{ uri: uri.href, mimeType: "application/json", text: r.text }],
@@ -348,7 +355,7 @@ const apiHandler = {
       return unauthorized();
     }
 
-    return createMcpHandler(buildServer(env, actorToken), { route: "/mcp" })(
+    return createMcpHandler(buildServer(env, actorToken, await coreFetch(env)), { route: "/mcp" })(
       request,
       env,
       ctx,
@@ -865,6 +872,46 @@ const authHandler = {
           "X-Frame-Options": "DENY",
         },
       });
+    }
+
+    // Headless passthrough for n8n/cron: a container has no public URL, so the
+    // gateway forwards API-key calls. Only X-API-Key and traceparent cross over
+    // (never X-Actor-Token: docs/remote-mcp.md §4.1).
+    if (url.pathname === "/call" && env.CHARTER_CORE) {
+      const json = (body: unknown, status: number) =>
+        new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+      if (request.method !== "POST") return json({ ok: false, error: "method_not_allowed" }, 405);
+      const key = request.headers.get("X-API-Key");
+      if (!key) return json({ ok: false, error: "unauthorized" }, 401);
+      const MAX_BODY = 1_048_576;
+      if (Number(request.headers.get("content-length") ?? "0") > MAX_BODY) {
+        return json({ ok: false, error: "too_large" }, 413);
+      }
+      // The header is advisory (chunked requests carry none): stream-read with a
+      // byte cap that cancels the upload, rather than buffering it all first.
+      // readCapped only touches .body/.text(), which a Request has too.
+      const { text: body, truncated } = await readCapped(request as unknown as Response, [], MAX_BODY);
+      if (truncated) return json({ ok: false, error: "too_large" }, 413);
+      const headers: Record<string, string> = { "Content-Type": "application/json", "X-API-Key": key };
+      const tp = request.headers.get("traceparent");
+      if (tp && TRACEPARENT.test(tp)) headers["traceparent"] = tp;
+      try {
+        const f = await coreFetch(env);
+        const res = await f(CORE_URL, { method: "POST", headers, body });
+        // Core answers every request with JSON; a non-JSON 5xx is the container
+        // platform (instance cap, failed start), not core.
+        if (res.status >= 500 && !(res.headers.get("Content-Type") ?? "").includes("json")) {
+          console.error("core unavailable", res.status, (await res.text()).slice(0, 200));
+          return json({ ok: false, error: "core_unavailable" }, 502);
+        }
+        const out: Record<string, string> = { "Content-Type": res.headers.get("Content-Type") ?? "application/json" };
+        const retry = res.headers.get("Retry-After");
+        if (retry) out["Retry-After"] = retry;
+        return new Response(res.body, { status: res.status, headers: out });
+      } catch (e) {
+        console.error("core unavailable", (e as Error).message);
+        return json({ ok: false, error: "core_unavailable" }, 502);
+      }
     }
 
     // "/" identifies the deployment to a human who lands on it. Everything

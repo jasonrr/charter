@@ -10,6 +10,7 @@ import logging
 import datetime
 import re
 
+import requests
 from google.cloud import bigquery
 
 from charter.settings import get_settings
@@ -70,6 +71,29 @@ def __getattr__(name):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+_D1_URL = "https://api.cloudflare.com/client/v4/accounts/{acct}/d1/database/{db}/query"
+
+
+def _d1_insert(row):
+    s = get_settings()
+    row = {k: v for k, v in row.items() if v is not None}   # absent column -> NULL
+    cols = list(row)                                         # fixed literals from record(), never caller input
+    sql = f"INSERT INTO audit ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})"
+    r = requests.post(
+        _D1_URL.format(acct=s.cf_account_id, db=s.cf_d1_database_id),
+        headers={"Authorization": f"Bearer {s.cf_api_token.get_secret_value()}",
+                 "Content-Type": "application/json"},
+        json={"sql": sql, "params": [row[c] for c in cols]},
+        timeout=(3, 5),      # connect, read: a dead D1 fails 'pre' audit in <=8 s, not 10
+    )
+    try:
+        body = r.json() if r.content else {}
+    except ValueError:
+        body = {}
+    if not r.ok or not body.get("success"):
+        raise RuntimeError(f"d1 audit insert failed: HTTP {r.status_code} {body.get('errors')}")
+
+
 def record(caller, verb, target, result, rid, detail=None, fail_open=True,
            on_behalf_of=None, credential=None):
     row = {
@@ -97,9 +121,12 @@ def record(caller, verb, target, result, rid, detail=None, fail_open=True,
         # the same thing. Same omitted-when-unset pattern as the two above.
         row["traceparent"] = traceparent
     try:
-        errors = _client().insert_rows_json(_table(), [row])
-        if errors:
-            raise RuntimeError(f"audit insert errors: {errors}")
+        if get_settings().charter_backend == "cloudflare":
+            _d1_insert(row)
+        else:
+            errors = _client().insert_rows_json(_table(), [row])
+            if errors:
+                raise RuntimeError(f"audit insert errors: {errors}")
     except Exception as e:
         logging.error("audit write failed (verb=%s rid=%s): %s", verb, rid, e)
         if not fail_open:

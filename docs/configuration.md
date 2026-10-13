@@ -6,7 +6,7 @@ All engine configuration is via environment variables. No config files, no YAML.
 
 | Variable | Type | Description |
 |---|---|---|
-| `GCP_PROJECT` | string | GCP project ID for BigQuery, Secret Manager, and Cloud Run |
+| `GCP_PROJECT` | string | GCP project ID for BigQuery, Secret Manager, and Cloud Run. Required when `CHARTER_BACKEND=gcp` (the default); unused in cloudflare mode |
 | `GOOGLE_OAUTH_CLIENT_ID` | string | Google OAuth client ID for actor identity verification. Once charter-gateway is deployed, this must be the gateway's **Web application** client id, not the Desktop client the old stdio proxy used — see `docs/deployment/gateway.md` step 2 |
 | `ALLOWED_DOMAIN` | string | Email domain suffix allowed for actor sign-in (e.g. `@example.com`) |
 
@@ -14,8 +14,13 @@ All engine configuration is via environment variables. No config files, no YAML.
 
 | Variable | Default | Description |
 |---|---|---|
+| `CHARTER_BACKEND` | `gcp` | `gcp` or `cloudflare` |
+| `CF_ACCOUNT_ID` | (empty) | Cloudflare mode: required; D1 audit log |
+| `CF_D1_DATABASE_ID` | (empty) | Cloudflare mode: required; D1 audit log |
+| `CF_API_TOKEN` | (empty) | Cloudflare mode: required; D1 audit log |
 | `PACKS` | `charter` | Comma-separated list of pack distributions to load via entry-point discovery |
 | `KEYS_SECRET_NAME` | `charter-keys` | Secret Manager secret holding API keys |
+| `KEYS_FILE` | `charter-keys.json` | Cloudflare mode only: local file the `charter keys` CLI reads/writes (digests only); push with `wrangler secret put CORE_CHARTER_KEYS` |
 | `GRANTS_SECRET_NAME` | `charter-grants` | Secret Manager secret holding the email→allow grants map |
 | `CHARTER_KEYS` | (empty) | Key map JSON, cold-start fallback if Secret Manager is unreachable at boot |
 | `CHARTER_GRANTS` | (empty) | Grants JSON, cold-start fallback if Secret Manager is unreachable at boot |
@@ -27,6 +32,15 @@ All engine configuration is via environment variables. No config files, no YAML.
 | `MAX_INLINE_BYTES` | `262144` | Success-envelope size (UTF-8 JSON bytes) above which `bridge()` offloads to `RESULTS_BUCKET` |
 | `IMPROVE_GITHUB_REPO` | (empty) | `owner/name` of the GitHub repo `improve.report` files issues in. Empty disables the verb and the `hint` on failing responses |
 | `IMPROVE_GITHUB_TOKEN` | (empty) | Fine-grained GitHub token with Issues: read and write on that one repo. Nothing else; it must not be able to push code |
+
+## Cloudflare Containers deployment
+
+In this deployment you do not set the variables above on the core. You set each
+one on the gateway Worker with the prefix `CORE_`, for example
+`CORE_ALLOWED_DOMAIN` and `CORE_CF_D1_DATABASE_ID`. The container receives them
+without the prefix. The gateway sets `CHARTER_BACKEND`, `PORT` and
+`GOOGLE_OAUTH_CLIENT_ID` for you. See
+[`deployment/cloudflare.md`](deployment/cloudflare.md) step 6.
 
 ## Plugin (interactive install)
 
@@ -47,6 +61,6 @@ This keeps the engine's public env-var API small and stable.
 
 | Pack | Config key | Description |
 |---|---|---|
-| BigQuery | `WAREHOUSE_DATASETS` | Datasets exposed (engine setting, shared) |
+| BigQuery | `WAREHOUSE_DATASETS` | Datasets exposed (engine setting, shared). GCP mode only |
 | Airtable | (pack-internal) | Airtable API key, base IDs, table IDs |
 | HubSpot | (pack-internal) | HubSpot portal ID, OAuth tokens |

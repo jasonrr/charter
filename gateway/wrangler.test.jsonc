@@ -1,0 +1,48 @@
+// Test-only twin of wrangler.jsonc: no containers (the vitest pool cannot build images). Keep vars/kv_namespaces identical; index.wiring.test.ts ORIGIN must equal CHARTER_GATEWAY_URL here.
+{
+  "name": "charter-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  // global_fetch_strictly_public is what makes Client ID Metadata Documents
+  // safe to enable: a CIMD client_id is a URL the gateway fetches, and without
+  // this flag that fetch could reach this Worker's own private routes and
+  // Cloudflare-internal addresses (SSRF). The OAuth provider refuses to do CIMD
+  // at all unless the flag is set.
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "kv_namespaces": [
+    { "binding": "OAUTH_KV", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }
+  ],
+  "vars": {
+    // GCP-origin deployments only; ignored when the CHARTER_CORE binding exists
+    "CHARTER_CORE_URL": "https://charter.example.com",
+    "CHARTER_ALLOWED_DOMAIN": "@example.com",
+    "GOOGLE_CLIENT_ID": "",
+    // This gateway's own canonical origin — replace with the real hostname
+    // you deploy to. Pins which redirect URIs a dynamically registered
+    // client may claim as "this gateway" (src/index.ts's screenRegistration)
+    // and what the gateway publishes as its resource identity (src/prm.ts);
+    // deliberately not read off the incoming request. See
+    // docs/deployment/gateway.md.
+    //
+    // The placeholder is under example.com, which IANA reserves and nobody can
+    // register, NOT under workers.dev: leaving an unedited workers.dev
+    // placeholder in place would let whoever registers that subdomain have
+    // redirect URIs on it accepted as "this gateway". Sign-in refuses to run
+    // until this matches the origin requests arrive on (src/gateway_url.ts).
+    "CHARTER_GATEWAY_URL": "https://charter-gateway.example.com",
+    // Extra https origins a client may register a redirect URI on, beyond
+    // loopback and this gateway. Comma-separated; empty means closed.
+    // e.g. "https://vscode.dev,https://insiders.vscode.dev" for VS Code's
+    // non-loopback fallback. See docs/deployment/gateway.md.
+    "CHARTER_EXTRA_REDIRECT_ORIGINS": "",
+    // Upstream systems a user can connect for act-as writes (remote-mcp.md
+    // §4.8). Public values only — the client secret lives on core, which does
+    // the exchange. Empty object means /connect/* 404s. Example:
+    //   "hs": {
+    //     "authorize_url": "https://app.hubspot.com/oauth/authorize",
+    //     "client_id": "<public client id>", "scopes": "oauth content",
+    //     "verb": "identity.hs.connect", "label": "HubSpot"
+    //   }
+    "CHARTER_CONNECT_PROVIDERS": {}
+  }
+}

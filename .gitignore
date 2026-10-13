@@ -10,3 +10,5 @@ build/
 .pi-subagents/
 .venv/
 compound-engineering.local.md
+charter-keys.json
+charter-grants.json
