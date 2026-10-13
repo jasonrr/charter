@@ -58,3 +58,17 @@ Container config: instance `basic` (¼ vCPU, 1 GiB, 4 GB disk; prod uses 512 Mi 
 - New keys/grants go live on deploy (~1 min) instead of within 60 s. Old container keeps serving during rollout.
 - First call after 10 min idle waits 1–3 s for the container to wake. Raise `sleepAfter` if the team minds.
 - MCP URL unchanged; Claude users do nothing.
+
+## Deviations
+
+- **T4 keys file perms** — `charter keys` writes `charter-keys.json` with mode 0600; the plan named no permissions. Credential-adjacent file. (f3fc621)
+- **T5 types/signature** — `CharterCore` ctor typed `DurableObjectState<{}>` (tsc rejected the bare form); `buildServer` gained an optional `coreFetchFn` param instead of going async. (b8d0401)
+- **T6 `/call` body cap** — enforced on the actual bytes by a streaming `readCapped` that cancels past 1 MiB, not only `content-length` (chunked bodies bypassed it); passthrough forwards core's `Content-Type` and `Retry-After`. (28e2f47, 026e0f3)
+- **T7 dry run** — `wrangler deploy --dry-run` builds the image and needs Docker; verified with `--containers-rollout=none`. `.dockerignore` also excludes `.env` and `*.egg-info`. (e27d35f, bd9c551)
+- **T8 runbook** — the Google OAuth client needs a free Google Cloud project (the design implied none); explicit `cd` per block; callback-URI update after the first deploy; install from a clone; "the DO stores no Charter data" (the containers library keeps its own lifecycle state there). (8367711, be18369)
+- **T9 smoke pack** — loaded by module path (`PACKS=charter.packs.smoke`), not an entry point: entry points load whenever `PACKS` names the `charter` distribution, so it would not be inert. (11d3bef)
+- **Rotation: container env comes from the Worker, not the DO** — on the first live run a newly named instance served the OLD key set; the Worker and the DO can run different versions during a deploy, and the design built the container env from the DO's own env. The Worker now passes the env it hashed over RPC (`fetchWithEnv`). Supersedes "Secret rotation = a new container, not a restart" as written; naming by env hash stays. (7cd520a)
+- **Rotation is not instant** — the design's "a revoked key stops working on the next request" does not hold: Cloudflare rolls a secret change out over ~30 s with old and new versions serving side by side. Measured and documented; runbook says wait 10 minutes between rotations. (c4df916)
+- **`max_instances` 3** (design said 2) — a 4th live env inside the 10-minute `sleepAfter` hits the cap; the containers library then answers `500 text/plain`, which `/call` maps to `502 core_unavailable`. Never a 200 from an old container. (464ad98, bd372db)
+- **Review fixes** — GCP-origin deploys must delete the container blocks from `wrangler.jsonc` (f9362d1); keys CLI errors on a missing/malformed `KEYS_FILE` except `add`, which warns (7f7f532); `CHARTER_BACKEND` trimmed/lowercased, empty = gcp (210324d); `coreEnv` stringifies JSON vars and skips bindings (fc675fa); runbook uses empty `CORE_PACKS` (the default loads GCP-only packs), states the D1 token's account-wide scope and that workers.dev has no rate limit on `/call` (f667bd8).
+- **Parked** — `t_dm38s5sitf0g9` (pre-existing no_grant audit with non-string verb), `t_dm3bcg6lur8g10` (review p3 follow-ups, incl. a Workers Rate Limiting binding for workers.dev deploys).

@@ -12,7 +12,7 @@
 - A skill that has an agent read and act on user-submitted text is a prompt-injection surface, and neither the design nor the plan named it. Worth a standing check whenever a skill consumes data a verb wrote.
 - Reviewing the fix for a finding caught that the fix's own claim was false for one heading. The scoped re-review after a fix round earns its cost; a fix that documents a new invariant needs that invariant tested, not just asserted in a comment.
 
-## cloudflare-core (PR #pending, 2026-10-12)
+## cloudflare-core (PR #7, 2026-10-12)
 
 - Plan's setup line `python3 -m venv .venv` → on this Mac `python3` is 3.14 and the package pins `<3.13`, so `pip install -e` fails and no pytest exists. Setup commands must name the interpreter (`python3.11 -m venv .venv`).
 - Plan assumed `wrangler deploy --dry-run` needs no Docker → it builds the container image even in dry-run and fails without a running daemon. `--containers-rollout=none` validates the rest of the config without Docker; the image build itself only gets proven with Docker up.
@@ -22,3 +22,6 @@
 - The containers library answers an instance-cap hit with `500 text/plain`, not a throw → a gateway that only catches exceptions passes the platform's text through. Classify a non-JSON 5xx from the container as "core unavailable".
 - `wrangler delete` leaves the container application and its image behind, and `CLOUDFLARE_API_TOKEN` in the shell silently overrides `wrangler login` (it needed Containers · Edit, and the account needed Workers Paid). Live smokes need a teardown that lists what remains.
 - The operator twice put the wrong thing on the clipboard (a token ID, then nothing usable) → check a pasted credential with a harmless API call before a deploy depends on it.
+- Plan made one `wrangler.jsonc` serve both deployment shapes and let a present binding beat an explicit URL → every GCP-origin adopter following the old gateway doc would silently deploy a container. When a config file gains a mode-switching block, the other mode's doc must say to remove it.
+- Plan's runbook example `CORE_PACKS=charter` (the default) loads every pack in the `charter` distribution, including the GCP-only ones → in the new backend those verbs register and fail at call time with outbound credential attempts. A new backend needs its own pack default checked, not the old one inherited.
+- A CLI whose state file defaults to a cwd-relative path, and whose next step pushes that file over the live secret, turns "ran it from the wrong directory" into "revoked every key". A missing state file must be an error for every command but the one that creates it.
