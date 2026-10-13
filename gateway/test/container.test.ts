@@ -24,8 +24,8 @@ describe("coreFetch", () => {
     expect(await coreFetch({ GOOGLE_CLIENT_ID: "cid" })).toBe(fetch);
   });
   it("routes to the env-named instance and forwards method, path, headers, body", async () => {
-    let seen: Request | undefined; const names: string[] = [];
-    const ns = { getByName: (n: string) => { names.push(n); return { fetch: async (r: Request) => { seen = r; return new Response("ok"); } }; } } as any;
+    let seen: Request | undefined; let vars: Record<string, string> | undefined; const names: string[] = [];
+    const ns = { getByName: (n: string) => { names.push(n); return { fetchWithEnv: async (r: Request, v: Record<string, string>) => { seen = r; vars = v; return new Response("ok"); } }; } } as any;
     const f = await coreFetch({ CHARTER_CORE: ns, GOOGLE_CLIENT_ID: "cid", CORE_X: "1" } as any);
     const res = await f(CORE_URL, { method: "POST", headers: { "X-API-Key": "k" }, body: "{}" });
     expect(await res.text()).toBe("ok");
@@ -34,5 +34,9 @@ describe("coreFetch", () => {
     expect(new URL(seen!.url).pathname).toBe("/");
     expect(seen!.headers.get("X-API-Key")).toBe("k");
     expect(await seen!.text()).toBe("{}");
+    // The container starts with the env this Worker hashed into the name, never
+    // the DO's own env, which can lag a deploy.
+    expect(vars).toEqual(coreEnv({ CORE_X: "1" }, "cid"));
+    expect(names[0]).toBe(await instanceName(vars!));
   });
 });

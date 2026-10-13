@@ -27,9 +27,16 @@ export async function instanceName(vars: Record<string, string>): Promise<string
 export class CharterCore extends Container<Env> {
   defaultPort = 8080;
   sleepAfter = "10m";
-  constructor(ctx: DurableObjectState<{}>, env: Env) {
-    super(ctx, env);
-    this.envVars = coreEnv(env as unknown as Record<string, unknown>, env.GOOGLE_CLIENT_ID);
+
+  /**
+   * Start (if needed) with the env the calling Worker hashed into this instance's
+   * name, then forward. Not this DO's own env: during a deploy the Worker and the
+   * DO can run different versions, and a container started from a stale env keeps
+   * the old keys for its whole life under the new name.
+   */
+  async fetchWithEnv(request: Request, vars: Record<string, string>): Promise<Response> {
+    this.envVars = vars;
+    return this.fetch(request);
   }
 }
 
@@ -39,8 +46,8 @@ type CoreEnv = { CHARTER_CORE?: DurableObjectNamespace<CharterCore>; GOOGLE_CLIE
 export async function coreFetch(env: CoreEnv): Promise<typeof fetch> {
   const ns = env.CHARTER_CORE;
   if (!ns) return fetch;
-  const name = await instanceName(coreEnv(env as unknown as Record<string, unknown>, env.GOOGLE_CLIENT_ID));
-  const stub = ns.getByName(name);
+  const vars = coreEnv(env as unknown as Record<string, unknown>, env.GOOGLE_CLIENT_ID);
+  const stub = ns.getByName(await instanceName(vars));
   return ((input: RequestInfo | URL, init?: RequestInit) =>
-    stub.fetch(new Request(input, init))) as typeof fetch;
+    stub.fetchWithEnv(new Request(input, init), vars)) as typeof fetch;
 }

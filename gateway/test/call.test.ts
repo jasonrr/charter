@@ -7,7 +7,7 @@ const ORIGIN = "https://charter-gateway.example.com"; // = wrangler.jsonc CHARTE
 
 function fakeCore() {
   const seen: Request[] = [];
-  const ns = { getByName: () => ({ fetch: async (r: Request) => { seen.push(r); return new Response('{"ok":true}', { status: 200, headers: { "Content-Type": "application/problem+json", "Retry-After": "7" } }); } }) };
+  const ns = { getByName: () => ({ fetchWithEnv: async (r: Request) => { seen.push(r); return new Response('{"ok":true}', { status: 200, headers: { "Content-Type": "application/problem+json", "Retry-After": "7" } }); } }) };
   return { ns: ns as unknown as Env["CHARTER_CORE"], seen };
 }
 function envWith(overrides: Partial<Env>): Env {
@@ -44,7 +44,7 @@ describe("POST /call", () => {
     const { ns } = fakeCore();
     expect((await call(envWith({ CHARTER_CORE: ns }), { method: "GET" })).status).toBe(405);
     expect((await call(envWith({ CHARTER_CORE: ns }), { method: "POST", body: "{}", headers: { "X-API-Key": "k", "content-length": "2000000" } })).status).toBe(413);
-    const boom = { getByName: () => ({ fetch: async () => { throw new Error("no container"); } }) } as unknown as Env["CHARTER_CORE"];
+    const boom = { getByName: () => ({ fetchWithEnv: async () => { throw new Error("no container"); } }) } as unknown as Env["CHARTER_CORE"];
     expect((await call(envWith({ CHARTER_CORE: boom }), { method: "POST", body: "{}", headers: { "X-API-Key": "k" } })).status).toBe(502);
   });
   it("413 on the actual body when there is no content-length (chunked)", async () => {
