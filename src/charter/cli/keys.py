@@ -42,11 +42,32 @@ def _keys_file():
     return pathlib.Path(os.environ.get("KEYS_FILE", "charter-keys.json"))
 
 
-def _fetch_keys():
-    """Read the current key map from Secret Manager (same secret the engine reads)."""
+def _die(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def _fetch_keys(create=False):
+    """Read the current key map from Secret Manager (same secret the engine reads).
+
+    File mode: a missing file is an error unless `create` (only `add` starts a new map).
+    """
     if _file_mode():
         p = _keys_file()
-        return json.loads(p.read_text()) if p.exists() else {}
+        if not p.exists():
+            if not create:
+                _die(f"KEYS_FILE {p} not found; run from the directory that holds it "
+                     "or set KEYS_FILE")
+            print(f"no {p}: starting a new key map. Pushing it replaces every key "
+                  "already in CORE_CHARTER_KEYS.", file=sys.stderr)
+            return {}
+        try:
+            keys = json.loads(p.read_text())
+        except ValueError:
+            keys = None
+        if not isinstance(keys, dict):
+            _die(f"KEYS_FILE {p} is not a JSON object")
+        return keys
     resp = _sm_client().access_secret_version(
         name=_secret_path(get_settings().keys_secret_name))
     return json.loads(resp.payload.data.decode("utf-8"))
@@ -78,7 +99,7 @@ def _sha256(key):
 
 
 def _add(name, interface, allow, require_actor=False):
-    keys = _fetch_keys()
+    keys = _fetch_keys(create=True)
     key = _generate_key()
     digest = _sha256(key)
     keys[digest] = {

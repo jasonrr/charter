@@ -76,3 +76,39 @@ def test_cloudflare_mode_uses_keys_file_and_no_settings(tmp_path, monkeypatch, c
     assert "wrangler secret put CORE_CHARTER_KEYS" in capsys.readouterr().err
     keys._revoke(name="agent-a")
     assert json.loads((tmp_path / "keys.json").read_text()) == {}
+
+
+def _file_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("CHARTER_BACKEND", "cloudflare")
+    monkeypatch.setenv("KEYS_FILE", str(tmp_path / "keys.json"))
+    monkeypatch.setattr(keys, "_sm_client", lambda: (_ for _ in ()).throw(AssertionError("no SM")))
+
+
+@pytest.mark.parametrize("argv", [["rotate", "--name", "x"], ["revoke", "--name", "x"], ["list"]])
+def test_file_mode_missing_file_exits_1(tmp_path, monkeypatch, capsys, argv):
+    _file_env(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit) as e:
+        keys.main(["keys", *argv])
+    assert e.value.code == 1
+    assert f"KEYS_FILE {tmp_path / 'keys.json'} not found; run from the directory that holds it or set KEYS_FILE" \
+        in capsys.readouterr().err
+    assert not (tmp_path / "keys.json").exists()
+
+
+def test_file_mode_add_warns_when_it_creates_the_file(tmp_path, monkeypatch, capsys):
+    _file_env(tmp_path, monkeypatch)
+    keys._add("a", "api", ["*"])
+    err = capsys.readouterr().err
+    assert f"no {tmp_path / 'keys.json'}: starting a new key map. Pushing it replaces every key already in CORE_CHARTER_KEYS." in err
+    keys._add("b", "api", ["*"])
+    assert "starting a new key map" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("content", ["not json", "[1, 2]", '"s"'])
+def test_file_mode_non_object_file_exits_1(tmp_path, monkeypatch, capsys, content):
+    _file_env(tmp_path, monkeypatch)
+    (tmp_path / "keys.json").write_text(content)
+    with pytest.raises(SystemExit) as e:
+        keys._add("a", "api", ["*"])
+    assert e.value.code == 1
+    assert f"KEYS_FILE {tmp_path / 'keys.json'} is not a JSON object" in capsys.readouterr().err
