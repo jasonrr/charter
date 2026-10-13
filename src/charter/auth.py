@@ -20,7 +20,7 @@ from charter.secret_map import SecretMap, allow_list
 from charter.actor_auth import actor_email
 from charter.grants import grants_for
 
-_MAP = SecretMap("charter keys", "keys_secret_name", "charter_keys")
+_MAP = SecretMap("charter keys", "keys_secret_name", "charter_keys", "keys")
 
 
 def _keys():

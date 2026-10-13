@@ -25,3 +25,12 @@
 - Plan made one `wrangler.jsonc` serve both deployment shapes and let a present binding beat an explicit URL → every GCP-origin adopter following the old gateway doc would silently deploy a container. When a config file gains a mode-switching block, the other mode's doc must say to remove it.
 - Plan's runbook example `CORE_PACKS=charter` (the default) loads every pack in the `charter` distribution, including the GCP-only ones → in the new backend those verbs register and fail at call time with outbound credential attempts. A new backend needs its own pack default checked, not the old one inherited.
 - A CLI whose state file defaults to a cwd-relative path, and whose next step pushes that file over the live secret, turns "ran it from the wrong directory" into "revoked every key". A missing state file must be an error for every command but the one that creates it.
+
+## cf-keys-grants-d1 (PR #8, 2026-10-13)
+
+- A Worker secret/var is capped at 5.1 kB and nothing before a live `wrangler secret put` sees it: `--dry-run`, tests and a 1-person smoke all pass. Any per-person map in a platform secret needs its ceiling computed at design time (bytes per entry × team size) and stated in the doc.
+- A mode check that reads `os.environ` before the `.env` loader runs makes the documented `.env` flow silently take the other mode's path → load `.env` at the top of the mode check, and test the `.env`-only invocation, not just exported vars.
+- `python-dotenv`'s `find_dotenv()` walks up from the calling *file*, not the cwd → for a tool/site-packages install it finds a stranger's `.env`. Pass `find_dotenv(usecwd=True)`.
+- Moving a map from store A to store B with "B wins once it exists" turns the first write to B into a lockout of everything still only in A → the first write must seed from A, and the doc must say to delete A afterwards (while A exists, a cold start during a B outage serves it, stale).
+- A lenient response parse at an auth boundary (`(result or [{}])[0].get(...) or []`) turned four malformed "success" shapes into "no row", and "no row" meant "serve the fallback map" → be strict on shape where an empty result changes who is authorized.
+- Three reviewers on one 870-line diff all found the same p1 and p2 in 70 s; the author's own self-review missed both because they live in the operator flow (`.env`, migration), not the engine path the tests cover. Execute the documented runbook, not just the tests.

@@ -1,7 +1,7 @@
 """Charter CLI entry point."""
 import sys
 
-from charter.cli import keys, mint_google_token
+from charter.cli import grants, keys, mint_google_token
 
 
 def main(argv=None):
@@ -12,6 +12,7 @@ def main(argv=None):
         print()
         print("Commands:")
         print("  charter keys <subcommand>     Key management (list/add/rotate/revoke/mint)")
+        print("  charter grants <subcommand>   Grants map, cloudflare mode (push/show)")
         print("  charter mint-google-token     Mint a Google refresh token")
         print()
         sys.exit(0)
@@ -19,6 +20,8 @@ def main(argv=None):
     cmd = argv[0]
     if cmd == "keys":
         keys.main(argv)
+    elif cmd == "grants":
+        grants.main(argv[1:])
     elif cmd == "mint-google-token":
         mint_google_token.main(argv[1:])
     else:

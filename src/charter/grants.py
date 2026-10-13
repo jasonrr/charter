@@ -20,7 +20,7 @@ from charter.secret_map import SecretMap, allow_list
 # WARNING, not ERROR, on a failed fetch: grants is an optional feature -- a
 # deployment with no charter-grants secret at all would log an ERROR every TTL
 # forever, and that's a normal quiet state, not an incident.
-_MAP = SecretMap("charter grants", "grants_secret_name", "charter_grants",
+_MAP = SecretMap("charter grants", "grants_secret_name", "charter_grants", "grants",
                  fetch_log_level=logging.WARNING)
 
 

@@ -81,10 +81,10 @@ Store the fragment where the engine reads keys — either of:
   `GCP_PROJECT` gives a fast permission error), or up to ~60s if the project is
   genuinely unreachable at the network level. Either way it's expected.
 
-- **Cloudflare**: `CHARTER_BACKEND=cloudflare charter keys add --name test-agent
-  --allow "data.*,identity.*"` writes `charter-keys.json` (digests only). Push it
-  with `npx wrangler secret put CORE_CHARTER_KEYS < charter-keys.json`
-  (`docs/deployment/cloudflare.md` step 5).
+- **Cloudflare**: with `CHARTER_BACKEND=cloudflare` and the three `CF_*` values
+  in `.env`, `charter keys add --name test-agent --allow "data.*,identity.*"`
+  writes the digest straight to the D1 `config` table; the core picks it up
+  within 60 s (`docs/deployment/cloudflare.md` step 5).
 
 Save the raw key itself — it is shown once and never stored.
 
