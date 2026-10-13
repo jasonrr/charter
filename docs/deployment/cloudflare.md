@@ -225,7 +225,8 @@ Worker URL in the output, for example
 Sign-in refuses to run when the gateway URL does not match the real origin.
 
 After the first deploy, wait before the first call: Cloudflare needs time to
-prepare the container. Wait time: measured after the live smoke test.
+prepare the container. In the live smoke test (2026-10-13) the first call got
+Cloudflare error `1042` for about 10 seconds, then `200`.
 
 To check the configuration without building the image, run
 `npx wrangler deploy --dry-run --containers-rollout=none`. Without
@@ -261,14 +262,24 @@ What `/call` does:
 - If the core container cannot answer, you get `502` with the error
   `core_unavailable`.
 
-Long verbs: measured ceiling recorded after the live smoke test.
+Long verbs: a verb that ran 150 seconds returned normally in the live smoke test (2026-10-13).
 
 ## 9. Operations
 
 **Rotate a secret.** From `gateway/`, run `npx wrangler secret put CORE_CHARTER_KEYS`
 (or any other `CORE_` secret). The next request starts a new container with
-the new values. Start time: measured after the live smoke test. From that
-request on, the old key does not work.
+the new values. Cloudflare rolls the change out over about 30 seconds. During
+that time a request can reach the old values or the new ones: the old key can
+still work, the new key can get `401`, and a request can get
+`502 core_unavailable` (retry it). After that, the old key gets `401` on every
+request. Measured in the live smoke test (2026-10-13).
+
+Wait 10 minutes between rotations. Each change of a `CORE_` value starts one
+more container, and the old one runs until it has had no requests for 10
+minutes. `max_instances` in `wrangler.jsonc` is 3. If a fourth set of values
+goes live before an old container sleeps, every `/call` gets
+`502 core_unavailable` until one does. No request reaches a container with the
+old values.
 
 **Revoke a key.** From the repository root, with the virtualenv active:
 
@@ -279,8 +290,7 @@ npx wrangler secret put CORE_CHARTER_KEYS < ../charter-keys.json
 ```
 
 **Cold start.** After 10 minutes with no requests, the container sleeps. The
-next request takes longer. Cold-start time: measured after the live smoke
-test.
+next request takes longer: 2 to 4 seconds in the live smoke test (2026-10-13).
 
 **Audit table.** `AUDIT_TABLE` does not apply here. The D1 table is always
 named `audit`.
@@ -292,6 +302,25 @@ the URI path equals `/call`, allow 60 requests per minute for each IP address.
 WAF rules apply only to a custom domain in a zone you own. If you use only the
 `workers.dev` address, you cannot add this rule; use a custom domain for the
 gateway if you need it.
+
+**API token for deploys.** If `CLOUDFLARE_API_TOKEN` is set in your shell,
+Wrangler uses it instead of `wrangler login`. That token needs
+**Account · Containers · Edit** too, or `wrangler deploy` stops with
+`Unauthorized` after it builds the image.
+
+**Remove a deployment.** `npx wrangler delete` removes the Worker but not its
+container application or image. Remove those too:
+
+```bash
+cd gateway
+npx wrangler delete
+npx wrangler containers list                 # note the ID of <worker-name>-chartercore
+npx wrangler containers delete <ID>
+npx wrangler containers images list
+npx wrangler containers images delete <repository>:<tag>
+npx wrangler d1 delete charter-audit
+npx wrangler kv namespace delete --namespace-id <OAUTH_KV id>
+```
 
 ## 10. What stays on GCP
 
