@@ -8,7 +8,12 @@ const PREFIX = "CORE_";
 export function coreEnv(env: Record<string, unknown>, googleClientId: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(env)) {
-    if (k.startsWith(PREFIX) && typeof v === "string") out[k.slice(PREFIX.length)] = v;
+    const name = k.slice(PREFIX.length);
+    if (!k.startsWith(PREFIX) || !name) continue;
+    if (typeof v === "string") out[name] = v;
+    else if (typeof v === "number" || typeof v === "boolean") out[name] = JSON.stringify(v);
+    // Plain JSON vars (e.g. CORE_CHARTER_CONNECT_PROVIDERS); bindings are class instances.
+    else if (Array.isArray(v) || (v && Object.getPrototypeOf(v) === Object.prototype)) out[name] = JSON.stringify(v);
   }
   out.PORT = "8080";
   out.CHARTER_BACKEND = "cloudflare";

@@ -10,6 +10,16 @@ describe("coreEnv", () => {
   });
 });
 
+describe("coreEnv value handling", () => {
+  it("stringifies numbers, booleans and plain JSON; skips bindings and empty names", () => {
+    class Binding { get() { return 1; } }
+    const env = { CORE_N: 3, CORE_F: false, CORE_O: { a: 1 }, CORE_A: [1], CORE_B: new Binding(), CORE_: "x", CORE_U: undefined };
+    expect(coreEnv(env, "cid")).toEqual({
+      N: "3", F: "false", O: '{"a":1}', A: "[1]", PORT: "8080", CHARTER_BACKEND: "cloudflare", GOOGLE_OAUTH_CLIENT_ID: "cid",
+    });
+  });
+});
+
 describe("instanceName", () => {
   it("is stable across key order and changes with any value", async () => {
     const a = await instanceName({ A: "1", B: "2" });
