@@ -68,6 +68,9 @@ a token.
    **Create Token**, then **Create Custom Token**.
 2. Add one permission: **Account**, **D1**, **Edit**.
 3. Under **Account Resources**, choose your account only.
+
+   **Account**, **D1**, **Edit** covers every D1 database in the account, not
+   only `audit`. Use an account with no other D1 data you care about.
 4. Create the token and copy it.
 
 Store it as a secret. Before the first deploy, Wrangler offers to create the
@@ -185,8 +188,18 @@ Core variables, in `vars`:
 ```jsonc
 "CORE_ALLOWED_DOMAIN": "@example.com",                   // same value as CHARTER_ALLOWED_DOMAIN
 "CORE_CHARTER_GATEWAY_URL": "https://charter.example.com", // same value as CHARTER_GATEWAY_URL
-"CORE_PACKS": "charter"
+"CORE_PACKS": ""
 ```
+
+An empty `CORE_PACKS` means engine verbs only. Do not use `charter` here: that
+value loads the reference `bigquery` and `gdrive` packs, which need GCP and
+fail on Cloudflare. Add your own packs by distribution name or module path,
+comma-separated. An empty value still boots; the container logs a harmless
+"refused: not allow-listed" warning for each reference pack it skips.
+
+The `charter.packs.smoke` pack (`smoke.sleep`) is a probe for live checks.
+Enable it with `CORE_PACKS=charter.packs.smoke`.
+Do not leave it on in production.
 
 The gateway and the core each read their own copy, so set both. If you change
 one, change the other.
@@ -300,8 +313,9 @@ each wrong request can wake the container, which you pay for. Add a rate limit
 in the dashboard: **Security**, **WAF**, **Rate limiting rules**. Example: when
 the URI path equals `/call`, allow 60 requests per minute for each IP address.
 WAF rules apply only to a custom domain in a zone you own. If you use only the
-`workers.dev` address, you cannot add this rule; use a custom domain for the
-gateway if you need it.
+`workers.dev` address, there is no rate limit in front of `/call`, and any
+request with any `X-API-Key` wakes the container, which you pay for. Use a
+custom domain for the gateway if you need the limit.
 
 **API token for deploys.** If `CLOUDFLARE_API_TOKEN` is set in your shell,
 Wrangler uses it instead of `wrangler login`. That token needs
