@@ -52,23 +52,39 @@ def _cloudflare_env(monkeypatch):
     settings_mod.get_settings.cache_clear()
 
 
-def test_cloudflare_backend_reads_keys_from_env_without_secret_manager(monkeypatch):
+def test_cloudflare_backend_reads_keys_from_d1_row(monkeypatch):
     _cloudflare_env(monkeypatch)
-    monkeypatch.setenv("CHARTER_KEYS", '{"sha256:abc": {"name": "k", "interface": "api", "allow": ["verbs.list"]}}')
+    monkeypatch.setenv("CHARTER_KEYS", '{"sha256:env": {"name": "e", "allow": ["*"]}}')
     calls = []
     monkeypatch.setattr(secret_map, "_sm_client", lambda: calls.append(1))
+    monkeypatch.setattr(secret_map.d1, "get_map", lambda name: calls.append(name) or
+                        {"sha256:abc": {"name": "k", "interface": "api", "allow": ["verbs.list"]}})
     auth._MAP.reset()
     assert "sha256:abc" in auth._MAP.get()
+    assert "sha256:env" not in auth._MAP.get()     # the row wins over the env var
     auth._MAP.reload()
     assert "sha256:abc" in auth._MAP.get()
-    assert calls == []            # Secret Manager never touched, even on reload
+    assert calls == ["keys", "keys"]               # Secret Manager never touched, even on reload
 
 
-def test_cloudflare_backend_reads_grants_from_env(monkeypatch):
+def test_cloudflare_backend_falls_back_to_env_while_no_row(monkeypatch):
+    # A deployment that predates the config table keeps working on CORE_CHARTER_KEYS.
+    _cloudflare_env(monkeypatch)
+    monkeypatch.setenv("CHARTER_KEYS", '{"sha256:abc": {"name": "k", "interface": "api", "allow": ["verbs.list"]}}')
+    monkeypatch.setattr(secret_map.d1, "get_map", lambda name: None)
+    auth._MAP.reset()
+    assert "sha256:abc" in auth._MAP.get()
+
+
+def test_cloudflare_backend_d1_outage_keeps_last_good_then_env(monkeypatch):
     _cloudflare_env(monkeypatch)
     monkeypatch.setenv("CHARTER_GRANTS", '{"a@example.com": {"allow": ["verbs.list"]}}')
-    calls = []
-    monkeypatch.setattr(secret_map, "_sm_client", lambda: calls.append(1))
+    monkeypatch.setattr(secret_map.d1, "get_map", lambda name: {"b@example.com": {"allow": ["*"]}})
     grants._MAP.reset()
-    assert grants.grants_for("a@example.com") == ["verbs.list"]
-    assert calls == []
+    assert grants.grants_for("b@example.com") == ["*"]
+    def boom(name): raise RuntimeError("d1 down")
+    monkeypatch.setattr(secret_map.d1, "get_map", boom)
+    grants._MAP.reload()
+    assert grants.grants_for("b@example.com") == ["*"]          # last-good kept
+    grants._MAP.reset()
+    assert grants.grants_for("a@example.com") == ["verbs.list"]  # cold start: env

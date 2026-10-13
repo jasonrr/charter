@@ -7,6 +7,11 @@ TTL_SECONDS, so add/rotate/revoke takes effect with no redeploy; both take an
 env var as a cold-start fallback when Secret Manager is briefly unreachable at
 boot; both are hand-edited by an operator, so both must fail closed.
 
+In cloudflare mode the live source is the D1 `config` table instead (row
+`keys` / `grants`, written by the `charter keys` / `charter grants` CLIs); a
+missing row means the env var IS the map, so a deployment that predates the
+table keeps working. The TTL and the env fallback are the same in both modes.
+
 Fail-closed means never raising: a fetch error keeps the last-good map, and a
 payload of the wrong shape (not a JSON object — e.g. a top-level array) or
 malformed fallback JSON is logged and yields an empty map. Identification runs
@@ -19,6 +24,7 @@ import logging
 
 from google.cloud import secretmanager
 
+from charter import d1
 from charter.settings import get_settings
 
 TTL_SECONDS = 60
@@ -49,8 +55,9 @@ class SecretMap:
     quiet state, not an incident.
     """
 
-    def __init__(self, label, secret_field, env_field, fetch_log_level=logging.ERROR):
+    def __init__(self, label, secret_field, env_field, d1_name, fetch_log_level=logging.ERROR):
         self.label = label
+        self.d1_name = d1_name
         self.secret_field = secret_field
         self.env_field = env_field
         self.fetch_log_level = fetch_log_level
@@ -64,9 +71,10 @@ class SecretMap:
 
     def _fetch(self):
         """Read the latest map from Secret Manager (the live source of truth);
-        in cloudflare mode the env var is the source and Secret Manager is skipped."""
+        in cloudflare mode from the D1 config row, or the env var while no row exists."""
         if get_settings().charter_backend == "cloudflare":
-            return self._from_env()
+            fetched = d1.get_map(self.d1_name)
+            return self._from_env() if fetched is None else fetched
         resp = _sm_client().access_secret_version(name=self._secret_path())
         return json.loads(resp.payload.data.decode("utf-8"))
 

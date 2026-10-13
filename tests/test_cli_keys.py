@@ -61,61 +61,68 @@ def test_mint_requires_explicit_allow(capsys):
         keys.main(["keys", "mint", "--name", "ci"])    # no --allow -> argparse error
 
 
-def test_cloudflare_mode_uses_keys_file_and_no_settings(tmp_path, monkeypatch, capsys):
+def _d1_env(monkeypatch, store):
+    """Cloudflare mode against an in-memory `config` table."""
     monkeypatch.setenv("CHARTER_BACKEND", "cloudflare")
-    monkeypatch.setenv("KEYS_FILE", str(tmp_path / "keys.json"))
+    for n in ("CF_ACCOUNT_ID", "CF_D1_DATABASE_ID", "CF_API_TOKEN"):
+        monkeypatch.setenv(n, "x")
     for k in ("GCP_PROJECT", "GOOGLE_OAUTH_CLIENT_ID", "ALLOWED_DOMAIN"):
         monkeypatch.delenv(k, raising=False)           # the CLI must not need engine config
-    def no_sm(): raise AssertionError("Secret Manager must not be called")
-    monkeypatch.setattr(keys, "_sm_client", no_sm)
+    monkeypatch.setattr(keys, "_sm_client", lambda: (_ for _ in ()).throw(AssertionError("no SM")))
+    monkeypatch.setattr(keys.d1, "get_map", lambda name, creds: store.get(name))
+    monkeypatch.setattr(keys.d1, "put_map", lambda name, value, creds: store.__setitem__(name, value))
+
+
+def test_cloudflare_mode_writes_the_d1_row_and_needs_no_settings(monkeypatch, capsys):
+    store = {}
+    _d1_env(monkeypatch, store)
     keys._add("agent-a", "api", ["verbs.list"])
-    stored = json.loads((tmp_path / "keys.json").read_text())
+    stored = store["keys"]
     assert len(stored) == 1 and next(iter(stored)).startswith("sha256:")
     assert stored[next(iter(stored))]["name"] == "agent-a"
-    assert (tmp_path / "keys.json").stat().st_mode & 0o777 == 0o600
-    assert "wrangler secret put CORE_CHARTER_KEYS" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "starting a new key map" in err and "wrote keys to D1" in err
+    keys._add("b", "api", ["*"])
+    assert "starting a new key map" not in capsys.readouterr().err
     keys._revoke(name="agent-a")
-    assert json.loads((tmp_path / "keys.json").read_text()) == {}
-
-
-def _file_env(tmp_path, monkeypatch):
-    monkeypatch.setenv("CHARTER_BACKEND", "cloudflare")
-    monkeypatch.setenv("KEYS_FILE", str(tmp_path / "keys.json"))
-    monkeypatch.setattr(keys, "_sm_client", lambda: (_ for _ in ()).throw(AssertionError("no SM")))
+    assert list(store["keys"].values())[0]["name"] == "b"
 
 
 @pytest.mark.parametrize("argv", [["rotate", "--name", "x"], ["revoke", "--name", "x"], ["list"]])
-def test_file_mode_missing_file_exits_1(tmp_path, monkeypatch, capsys, argv):
-    _file_env(tmp_path, monkeypatch)
+def test_cloudflare_mode_missing_row_exits_1(monkeypatch, capsys, argv):
+    store = {}
+    _d1_env(monkeypatch, store)
     with pytest.raises(SystemExit) as e:
         keys.main(["keys", *argv])
     assert e.value.code == 1
-    assert f"KEYS_FILE {tmp_path / 'keys.json'} not found; run from the directory that holds it or set KEYS_FILE" \
-        in capsys.readouterr().err
-    assert not (tmp_path / "keys.json").exists()
+    assert "no keys row in D1 yet" in capsys.readouterr().err
+    assert store == {}
 
 
-def test_file_mode_add_warns_when_it_creates_the_file(tmp_path, monkeypatch, capsys):
-    _file_env(tmp_path, monkeypatch)
-    keys._add("a", "api", ["*"])
-    err = capsys.readouterr().err
-    assert f"no {tmp_path / 'keys.json'}: starting a new key map. Pushing it replaces every key already in CORE_CHARTER_KEYS." in err
-    keys._add("b", "api", ["*"])
-    assert "starting a new key map" not in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("content", ["not json", "[1, 2]", '"s"'])
-def test_file_mode_non_object_file_exits_1(tmp_path, monkeypatch, capsys, content):
-    _file_env(tmp_path, monkeypatch)
-    (tmp_path / "keys.json").write_text(content)
+def test_cloudflare_mode_missing_cf_vars_exits_1(monkeypatch, capsys):
+    monkeypatch.setenv("CHARTER_BACKEND", "Cloudflare")      # backend is normalised
+    monkeypatch.delenv("CF_API_TOKEN", raising=False)
+    monkeypatch.setattr(keys, "load_dotenv", lambda: None)
+    monkeypatch.setenv("CF_ACCOUNT_ID", "x")
+    monkeypatch.setenv("CF_D1_DATABASE_ID", "x")
     with pytest.raises(SystemExit) as e:
         keys._add("a", "api", ["*"])
     assert e.value.code == 1
-    assert f"KEYS_FILE {tmp_path / 'keys.json'} is not a JSON object" in capsys.readouterr().err
+    assert "set CF_API_TOKEN" in capsys.readouterr().err
 
 
-def test_file_mode_backend_is_normalised(tmp_path, monkeypatch):
-    _file_env(tmp_path, monkeypatch)
-    monkeypatch.setenv("CHARTER_BACKEND", "Cloudflare")
-    keys._add("a", "api", ["*"])
-    assert (tmp_path / "keys.json").exists()
+def test_grants_push_validates_then_writes_the_row(tmp_path, monkeypatch, capsys):
+    from charter.cli import grants
+    store = {}
+    _d1_env(monkeypatch, store)
+    f = tmp_path / "grants.json"
+    f.write_text('{"a@example.com": {"allow": "*"}}')      # the string-typo the engine rejects
+    with pytest.raises(SystemExit):
+        grants.main(["push", str(f)])
+    assert "malformed entry for a@example.com" in capsys.readouterr().err
+    assert store == {}
+    f.write_text('{"a@example.com": {"allow": ["verbs.*"]}}')
+    grants.main(["push", str(f)])
+    assert store["grants"] == {"a@example.com": {"allow": ["verbs.*"]}}
+    grants.main(["show"])
+    assert json.loads(capsys.readouterr().out) == store["grants"]

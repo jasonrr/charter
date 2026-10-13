@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import requests
 
-from charter import audit, settings
+from charter import audit, d1, settings
 
 
 @pytest.fixture
@@ -38,7 +38,7 @@ def test_d1_insert_shape(cf, monkeypatch):
         calls.append((url, headers, json))
         return _Resp(200, {"success": True, "result": []})
 
-    monkeypatch.setattr(audit.requests, "post", post)
+    monkeypatch.setattr(d1.requests, "post", post)
     audit.record({"name": "k", "interface": "api"}, "verbs.list", None, "ok", rid="r1")
     url, headers, body = calls[0]
     assert url == "https://api.cloudflare.com/client/v4/accounts/acct1/d1/database/db1/query"
@@ -51,7 +51,7 @@ def test_d1_insert_shape(cf, monkeypatch):
 
 
 def test_d1_failure_respects_fail_open(cf, monkeypatch):
-    monkeypatch.setattr(audit.requests, "post",
+    monkeypatch.setattr(d1.requests, "post",
                         lambda *a, **k: _Resp(500, {"success": False, "errors": [{"message": "x"}]}))
     audit.record(None, "v", None, "ok", rid="r")                      # fail_open: no raise
     with pytest.raises(RuntimeError):
@@ -59,7 +59,7 @@ def test_d1_failure_respects_fail_open(cf, monkeypatch):
 
 
 def test_d1_non_json_error_body_still_raises_runtime_error(cf, monkeypatch):
-    monkeypatch.setattr(audit.requests, "post", lambda *a, **k: _Resp(502, ValueError("not json"), b"<html>"))
+    monkeypatch.setattr(d1.requests, "post", lambda *a, **k: _Resp(502, ValueError("not json"), b"<html>"))
     with pytest.raises(RuntimeError) as e:
         audit.record(None, "v", None, "attempt", rid="r", fail_open=False)
     assert "502" in str(e.value) and "tok1" not in str(e.value)
@@ -70,7 +70,7 @@ def test_d1_transport_errors_follow_fail_open(cf, monkeypatch, caplog, exc):
     def boom(*a, **k):
         raise exc
 
-    monkeypatch.setattr(audit.requests, "post", boom)
+    monkeypatch.setattr(d1.requests, "post", boom)
     with caplog.at_level(logging.ERROR):
         audit.record(None, "v", None, "ok", rid="r")                  # fail_open: swallowed
     assert "tok1" not in caplog.text
@@ -80,7 +80,7 @@ def test_d1_transport_errors_follow_fail_open(cf, monkeypatch, caplog, exc):
 
 def test_d1_schema_matches_row_columns(cf, monkeypatch):
     calls = []
-    monkeypatch.setattr(audit.requests, "post",
+    monkeypatch.setattr(d1.requests, "post",
                         lambda url, headers=None, json=None, timeout=None:
                         calls.append(json) or _Resp(200, {"success": True}))
     audit.begin_trace("00-" + "a" * 32 + "-" + "b" * 16 + "-01")

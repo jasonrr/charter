@@ -10,9 +10,9 @@ import logging
 import datetime
 import re
 
-import requests
 from google.cloud import bigquery
 
+from charter import d1
 from charter.settings import get_settings
 
 # W3C traceparent, version 00: "00-<32 hex trace id>-<16 hex span id>-<2 hex flags>".
@@ -71,27 +71,11 @@ def __getattr__(name):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-_D1_URL = "https://api.cloudflare.com/client/v4/accounts/{acct}/d1/database/{db}/query"
-
-
 def _d1_insert(row):
-    s = get_settings()
     row = {k: v for k, v in row.items() if v is not None}   # absent column -> NULL
     cols = list(row)                                         # fixed literals from record(), never caller input
-    sql = f"INSERT INTO audit ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})"
-    r = requests.post(
-        _D1_URL.format(acct=s.cf_account_id, db=s.cf_d1_database_id),
-        headers={"Authorization": f"Bearer {s.cf_api_token.get_secret_value()}",
-                 "Content-Type": "application/json"},
-        json={"sql": sql, "params": [row[c] for c in cols]},
-        timeout=(3, 5),      # connect, read: a dead D1 fails 'pre' audit in <=8 s, not 10
-    )
-    try:
-        body = r.json() if r.content else {}
-    except ValueError:
-        body = {}
-    if not r.ok or not body.get("success"):
-        raise RuntimeError(f"d1 audit insert failed: HTTP {r.status_code} {body.get('errors')}")
+    d1.query(f"INSERT INTO audit ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+             [row[c] for c in cols])
 
 
 def record(caller, verb, target, result, rid, detail=None, fail_open=True,

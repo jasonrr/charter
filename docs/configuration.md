@@ -15,15 +15,14 @@ All engine configuration is via environment variables. No config files, no YAML.
 | Variable | Default | Description |
 |---|---|---|
 | `CHARTER_BACKEND` | `gcp` | `gcp` or `cloudflare` |
-| `CF_ACCOUNT_ID` | (empty) | Cloudflare mode: required; D1 audit log |
-| `CF_D1_DATABASE_ID` | (empty) | Cloudflare mode: required; D1 audit log |
-| `CF_API_TOKEN` | (empty) | Cloudflare mode: required; D1 audit log |
+| `CF_ACCOUNT_ID` | (empty) | Cloudflare mode: required; D1 (audit log, keys and grants maps) |
+| `CF_D1_DATABASE_ID` | (empty) | Cloudflare mode: required; D1 (audit log, keys and grants maps) |
+| `CF_API_TOKEN` | (empty) | Cloudflare mode: required; D1 (audit log, keys and grants maps). The `charter keys` / `charter grants` CLIs read the three `CF_*` values from the environment or `.env` |
 | `PACKS` | `charter` | Comma-separated list of pack distributions to load via entry-point discovery |
 | `KEYS_SECRET_NAME` | `charter-keys` | Secret Manager secret holding API keys |
-| `KEYS_FILE` | `charter-keys.json` | Cloudflare mode only: local file the `charter keys` CLI reads/writes (digests only); push with `wrangler secret put CORE_CHARTER_KEYS` |
 | `GRANTS_SECRET_NAME` | `charter-grants` | Secret Manager secret holding the email→allow grants map |
-| `CHARTER_KEYS` | (empty) | Key map JSON, cold-start fallback if Secret Manager is unreachable at boot |
-| `CHARTER_GRANTS` | (empty) | Grants JSON, cold-start fallback if Secret Manager is unreachable at boot |
+| `CHARTER_KEYS` | (empty) | Key map JSON, cold-start fallback if Secret Manager (or, in Cloudflare mode, D1) is unreachable at boot; in Cloudflare mode also the map while the D1 `config` row `keys` does not exist |
+| `CHARTER_GRANTS` | (empty) | Grants JSON, same fallback rules as `CHARTER_KEYS` (D1 row `grants` in Cloudflare mode) |
 | `GOOGLE_REFRESH_SECRET_NAME` | `charter-google-refresh` | Secret Manager secret holding Google refresh tokens |
 | `AUDIT_TABLE` | `charter.audit` | BigQuery table for audit logs |
 | `CHARTER_GATEWAY_URL` | (empty) | The gateway's canonical origin. Act-as connect verbs derive both the connect page URL (`<origin>/connect/<id>`) and the redirect URI they will accept (`<origin>/connect/<id>/callback`) from it — see `docs/remote-mcp.md` §4.8. Empty disables connecting an upstream account. Same value as the gateway's own `CHARTER_GATEWAY_URL` |

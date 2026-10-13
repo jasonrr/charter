@@ -47,6 +47,9 @@ that isn't a JSON object — a top-level array, or invalid JSON — is
 `charter grants fetch failed: …`. Core keeps the last-good map if it has one; on
 a cold start it falls back to `CHARTER_GRANTS`, and to an empty map if that is
 unusable too. An empty map is a locked-out deployment, not a permissive one.
+On Cloudflare the map is the D1 `config` row `grants`, replaced whole by
+`charter grants push <file>` (which rejects every malformed shape above before
+writing); the same fallback rules apply.
 
 **Key records fail closed the same way.** `charter-keys` entries share this
 validation — one copy, `secret_map.allow_list`, both paths — and additionally

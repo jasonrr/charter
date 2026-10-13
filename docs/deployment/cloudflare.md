@@ -7,7 +7,7 @@ the OAuth client. Three Cloudflare products do the work:
 
 - **Workers** runs the gateway (sign-in, MCP, and `POST /call`).
 - **Containers** runs the core (the Python engine) in the same deploy.
-- **D1** stores the audit log.
+- **D1** stores the audit log and the keys and grants maps.
 
 The gateway starts the core container on the first request. The container
 sleeps after 10 minutes with no traffic.
@@ -53,7 +53,7 @@ npx wrangler d1 create charter-audit
 ```
 
 Write down the `database_id` from the output. Step 4 uses it. Then create the
-audit table:
+tables (`audit`, and `config`, which holds the keys and grants maps):
 
 ```bash
 npx wrangler d1 execute charter-audit --remote --file ../sql/audit_table.d1.sql
@@ -61,8 +61,9 @@ npx wrangler d1 execute charter-audit --remote --file ../sql/audit_table.d1.sql
 
 ## 4. API token for the audit log
 
-The core container writes audit rows to D1 through the Cloudflare API. It needs
-a token.
+The core container writes audit rows to D1 and reads the keys and grants maps
+from it through the Cloudflare API. It needs a token. The `charter keys` and
+`charter grants` commands in step 5 use the same token.
 
 1. In the Cloudflare dashboard, open **My Profile**, then **API Tokens**, then
    **Create Token**, then **Create Custom Token**.
@@ -106,48 +107,58 @@ python3.11 -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
-Make a key (still in the repository root). The command needs only the `CHARTER_BACKEND` variable:
+Both commands below write to the D1 database directly, so they need the
+database and token from steps 3 and 4. Put them in a `.env` file in the
+repository root (git ignores it), or export them:
 
 ```bash
-CHARTER_BACKEND=cloudflare charter keys add --name first-agent --allow "verbs.*,identity.*"
+cat > .env <<'ENV'
+CHARTER_BACKEND=cloudflare
+CF_ACCOUNT_ID=0123456789abcdef0123456789abcdef
+CF_D1_DATABASE_ID=b2c4e6a8-1d3f-4a5b-9c7e-0f1a2b3c4d5e
+CF_API_TOKEN=the-token-from-step-4
+ENV
 ```
 
-The command writes `charter-keys.json` (file mode 0600). The file holds only
-the `sha256:` digest of the key. The command prints the plain key one time.
-Copy it now. Example output:
+Make a key:
+
+```bash
+charter keys add --name first-agent --allow "verbs.*,identity.*"
+```
+
+The command stores only the `sha256:` digest of the key, in the `config` table
+(row `keys`). It prints the plain key one time. Copy it now. Example output:
 
 ```text
-wrote charter-keys.json. Push it with: npx wrangler secret put CORE_CHARTER_KEYS < charter-keys.json
+no keys row in D1: starting a new key map. Once it exists the core ignores CORE_CHARTER_KEYS.
+wrote keys to D1; live within 60 s (or call admin.reload_keys)
 Added key for first-agent (digest: sha256:9f2c…)
   Key (save this — it will not be shown again): Qk3v…
 ```
 
-`charter-keys.json` is the source of truth for the key map. Each `charter keys`
-command changes this file. If you lose it, or start a new one and push it, all
-earlier keys stop working. It holds only digests, so keep it safe, but it does
-not hold a usable key.
-
-Push the file as a secret:
-
-```bash
-cd gateway
-npx wrangler secret put CORE_CHARTER_KEYS < ../charter-keys.json
-```
+`charter keys list`, `rotate` and `revoke` work on the same row. The core
+re-reads it every 60 seconds; the `admin.reload_keys` verb re-reads it at once.
 
 Next, make the grants file. It says which verbs each person can call after
-Google sign-in (see [`grants.md`](grants.md)). From the repository root:
+Google sign-in (see [`grants.md`](grants.md)). Then push it:
 
 ```bash
-cd ..   # to the repository root
 cat > charter-grants.json <<'JSON'
 {"you@example.com": {"allow": ["verbs.*", "identity.*"]}}
 JSON
-cd gateway
-npx wrangler secret put CORE_CHARTER_GRANTS < ../charter-grants.json
+charter grants push charter-grants.json
 ```
 
-Replace `you@example.com` with your own address. Git ignores both files. Do not
-commit them.
+Replace `you@example.com` with your own address. `charter grants push` replaces
+the whole map (row `grants`) and refuses a malformed file; `charter grants show`
+prints the live map. The file itself is not needed after the push, and git
+ignores it.
+
+**Size.** A Worker secret holds at most 5.1 kB, which is about 20 grants or 19
+keys. That is why the maps live in D1 (2 MB per row) and not in `CORE_CHARTER_KEYS`
+/ `CORE_CHARTER_GRANTS`. Those two variables still work as a cold-start fallback
+when D1 is unreachable, and as the map itself while the `config` row does not
+exist yet (a deployment from before the table). Keep them small or unset.
 
 ## 6. Gateway configuration
 
@@ -204,11 +215,12 @@ Do not leave it on in production.
 The gateway and the core each read their own copy, so set both. If you change
 one, change the other.
 
-Core secrets (you set the first three in steps 4 and 5):
+Core secrets (you set the first in step 4; the other two are optional, see the
+size note in step 5):
 
-- `CORE_CHARTER_KEYS`
-- `CORE_CHARTER_GRANTS`
 - `CORE_CF_API_TOKEN`
+- `CORE_CHARTER_KEYS` (fallback only)
+- `CORE_CHARTER_GRANTS` (fallback only)
 
 A pack setting from [`../configuration.md`](../configuration.md) "Pack-specific"
 goes in as `CORE_<NAME>`, with `<NAME>` the setting's name in that table.
@@ -279,7 +291,15 @@ Long verbs: a verb that ran 150 seconds returned normally in the live smoke test
 
 ## 9. Operations
 
-**Rotate a secret.** From `gateway/`, run `npx wrangler secret put CORE_CHARTER_KEYS`
+**Keys and grants.** `charter keys add|rotate|revoke` and `charter grants push`
+write D1 directly. Every core container re-reads the rows within 60 seconds;
+call `admin.reload_keys` to make it immediate. No deploy, no container restart.
+Until then a revoked key can still work. A D1 outage keeps the last-good maps in
+memory; a container that cold-starts during one falls back to
+`CORE_CHARTER_KEYS` / `CORE_CHARTER_GRANTS` (empty maps if unset: locked out,
+never permissive).
+
+**Rotate a secret.** From `gateway/`, run `npx wrangler secret put CORE_CF_API_TOKEN`
 (or any other `CORE_` secret). The next request starts a new container with
 the new values. Cloudflare rolls the change out over about 30 seconds. During
 that time a request can reach the old values or the new ones: the old key can
@@ -294,19 +314,18 @@ goes live before an old container sleeps, every `/call` gets
 `502 core_unavailable` until one does. No request reaches a container with the
 old values.
 
-**Revoke a key.** From the repository root, with the virtualenv active:
+**Revoke a key.** From the repository root, with the virtualenv active and the
+`.env` from step 5:
 
 ```bash
-CHARTER_BACKEND=cloudflare charter keys revoke --name first-agent
-cd gateway
-npx wrangler secret put CORE_CHARTER_KEYS < ../charter-keys.json
+charter keys revoke --name first-agent
 ```
 
 **Cold start.** After 10 minutes with no requests, the container sleeps. The
 next request takes longer: 2 to 4 seconds in the live smoke test (2026-10-13).
 
-**Audit table.** `AUDIT_TABLE` does not apply here. The D1 table is always
-named `audit`.
+**Audit table.** `AUDIT_TABLE` does not apply here. The D1 tables are always
+named `audit` and `config`.
 
 **Protect `/call`.** The gateway cannot tell a valid key from a wrong one, and
 each wrong request can wake the container, which you pay for. Add a rate limit

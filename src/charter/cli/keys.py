@@ -1,5 +1,6 @@
-"""Key-issuance CLI for Charter: list/add/revoke/rotate against Secret Manager, or a local
-file (KEYS_FILE) when CHARTER_BACKEND=cloudflare.
+"""Key-issuance CLI for Charter: list/add/revoke/rotate against Secret Manager, or the
+D1 `config` row `keys` when CHARTER_BACKEND=cloudflare (needs CF_ACCOUNT_ID,
+CF_D1_DATABASE_ID, CF_API_TOKEN -- from the environment or a .env file).
 
 Also supports offline mint mode: prints a random key + the exact sha256:
 JSON fragment for env config.
@@ -15,13 +16,16 @@ import argparse
 import hashlib
 import json
 import os
-import pathlib
 import secrets
 import sys
 
+from dotenv import load_dotenv
 from google.cloud import secretmanager
 
+from charter import d1
 from charter.settings import get_settings
+
+_CF_VARS = ("CF_ACCOUNT_ID", "CF_D1_DATABASE_ID", "CF_API_TOKEN")
 
 
 def _sm_client():
@@ -33,13 +37,9 @@ def _secret_path(name):
     return f"projects/{s.gcp_project}/secrets/{name}/versions/latest"
 
 
-def _file_mode():
+def _cloudflare_mode():
     # Read env directly, like _mint: the CLI must work before engine config exists.
     return (os.environ.get("CHARTER_BACKEND") or "gcp").strip().lower() == "cloudflare"
-
-
-def _keys_file():
-    return pathlib.Path(os.environ.get("KEYS_FILE", "charter-keys.json"))
 
 
 def _die(msg):
@@ -47,26 +47,32 @@ def _die(msg):
     sys.exit(1)
 
 
+def _d1_creds():
+    # Env (or .env, like Settings) rather than get_settings(): the CLI must work
+    # without the engine's required config.
+    load_dotenv()
+    missing = [n for n in _CF_VARS if not os.environ.get(n)]
+    if missing:
+        _die(f"CHARTER_BACKEND=cloudflare: set {', '.join(missing)}")
+    return tuple(os.environ[n] for n in _CF_VARS)
+
+
 def _fetch_keys(create=False):
     """Read the current key map from Secret Manager (same secret the engine reads).
 
-    File mode: a missing file is an error unless `create` (only `add` starts a new map).
+    Cloudflare mode: the D1 row. No row is an error unless `create` (only `add`
+    starts a new map; once the row exists the core stops reading CORE_CHARTER_KEYS).
     """
-    if _file_mode():
-        p = _keys_file()
-        if not p.exists():
+    if _cloudflare_mode():
+        keys = d1.get_map("keys", creds=_d1_creds())
+        if keys is None:
             if not create:
-                _die(f"KEYS_FILE {p} not found; run from the directory that holds it "
-                     "or set KEYS_FILE")
-            print(f"no {p}: starting a new key map. Pushing it replaces every key "
-                  "already in CORE_CHARTER_KEYS.", file=sys.stderr)
+                _die("no keys row in D1 yet; `charter keys add` creates it")
+            print("no keys row in D1: starting a new key map. Once it exists the core "
+                  "ignores CORE_CHARTER_KEYS.", file=sys.stderr)
             return {}
-        try:
-            keys = json.loads(p.read_text())
-        except ValueError:
-            keys = None
         if not isinstance(keys, dict):
-            _die(f"KEYS_FILE {p} is not a JSON object")
+            _die("D1 config row 'keys' is not a JSON object")
         return keys
     resp = _sm_client().access_secret_version(
         name=_secret_path(get_settings().keys_secret_name))
@@ -75,13 +81,9 @@ def _fetch_keys(create=False):
 
 def _store_keys(keys):
     """Write the updated key map back to Secret Manager (digests only, never plaintext keys)."""
-    if _file_mode():
-        p = _keys_file()
-        p.touch(mode=0o600)
-        p.chmod(0o600)
-        p.write_text(json.dumps(keys, indent=2) + "\n")
-        print(f"wrote {p}. Push it with: npx wrangler secret put CORE_CHARTER_KEYS < {p}",
-              file=sys.stderr)
+    if _cloudflare_mode():
+        d1.put_map("keys", keys, creds=_d1_creds())
+        print("wrote keys to D1; live within 60 s (or call admin.reload_keys)", file=sys.stderr)
         return
     s = get_settings()
     parent = f"projects/{s.gcp_project}/secrets/{s.keys_secret_name}"
