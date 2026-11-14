@@ -13,3 +13,7 @@ compound-engineering.local.md
 charter-keys.json
 charter-grants.json
 .claude/
+
+# worktree bootstrap
+.worktree-bootstrapped
+.worktree-bootstrap.log
