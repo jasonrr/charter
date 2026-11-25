@@ -25,7 +25,6 @@ from charter.settings import get_settings
 from charter import identity_context
 from charter.identity_verbs import whoami
 from charter import improve
-from charter import results
 from charter.sdk import (VERBS, PREFIXES, register, is_read, target_prefix,
                          target_field, summary, _DRY_RUN)
 from charter.sdk import loader as _pack_loader
@@ -45,26 +44,16 @@ def _reload_keys(body, caller):
 # Discovery primitive: any authenticated caller may call verbs.list regardless of scope,
 # so an agent can always learn its own toolbox. It reveals only the verbs the caller is
 # already allowed to use, so it leaks nothing.
-# result.read joins verbs.list here: its authorization is OWNERSHIP (only the caller
-# record that produced a result may fetch it — enforced in results.fetch), which
-# is stricter than any grant pattern; requiring a result.* grant would only lock
-# humans out of their own results.
 #
 # _ALWAYS_ALLOWED is SCOPE-exempt only. The require_actor gate below answers a
-# different question — whether a human must be behind this call — and the two
-# verbs split on it:
-#   - verbs.list is also actor-exempt (_ACTOR_EXEMPT): an agent must be able to
-#     inspect its toolbox before a human signs in, and a valid key with no actor
-#     leaks nothing new by listing it.
-#   - result.read is NOT actor-exempt: ownership authorizes WHICH blobs a caller
-#     may fetch, but it does not waive the human-presence requirement that
-#     caller's key was configured with. A bare leaked require_actor key must not
-#     be able to read a blob its human produced.
-# improve.report joins _ALWAYS_ALLOWED for the opposite reason to result.read:
-# not because a stricter check exists, but because a `denied` on a verb the
-# caller needed is exactly the gap it exists to report. It stays out of
+# different question — whether a human must be behind this call. verbs.list is
+# also actor-exempt (_ACTOR_EXEMPT): an agent must be able to inspect its
+# toolbox before a human signs in, and a valid key with no actor leaks nothing
+# new by listing it.
+# improve.report joins _ALWAYS_ALLOWED because a `denied` on a verb the caller
+# needed is exactly the gap it exists to report. It stays out of
 # _ACTOR_EXEMPT: an issue must be attributable. See charter/improve.py.
-_ALWAYS_ALLOWED = {"verbs.list", "result.read", "improve.report"}
+_ALWAYS_ALLOWED = {"verbs.list", "improve.report"}
 _ACTOR_EXEMPT = {"verbs.list"}
 
 
@@ -103,24 +92,6 @@ register("admin.reload_keys", _reload_keys, "post", read=False)
 register("identity.whoami", whoami, "post")
 
 
-def _producer(caller):
-    """Producer identity for the results store, namespaced by interface so a key
-    named like a granted email can never collide with that human's OAuth identity
-    (interface is "oauth" for a verified human, "api"/"plugin"/etc. for a key)."""
-    return f"{caller['interface']}:{caller['name']}"
-
-
-def result_read(body, caller):
-    """Fetch a previously offloaded oversized result by id (producer-only). Returns the
-    stored envelope as a JSON string; meant for the gateway's resource fetch, not for
-    inlining into a model's context."""
-    rid_arg = body.get("id")
-    content = results.fetch(rid_arg if isinstance(rid_arg, str) else "", _producer(caller))
-    return {"content": content, "mime": "application/json",
-            "target": f"result:{rid_arg[:64] if isinstance(rid_arg, str) else ''}"}
-
-
-register("result.read", result_read, "post", read=True)
 register("improve.report", improve.report, "post")
 
 # Packs: config-listed modules + allow-listed entry points (default: none).
@@ -140,26 +111,9 @@ def _with_hint(out, verb):
 
 
 def _success(verb, rid, caller, result):
-    """The 200 envelope, offloading oversize bodies to the results store (§4.5).
-
-    Runs AFTER the ok audit row: the verb's outcome is a fact by now, so a dead
-    bucket must not turn a success into an error. Fail-open to the inline body —
-    the gateway's 1 MB cap still bounds what can reach a model's context.
-    result.read is exempt or a fetched blob would just be re-offloaded.
-    """
-    payload = {"ok": True, "verb": verb, "request_id": rid, **result}
-    encoded = _jsonlib.dumps(payload)
-    cfg = get_settings()
-    if (not cfg.results_bucket or verb == "result.read"
-            or len(encoded.encode()) <= cfg.max_inline_bytes):
-        return (encoded, 200, {"Content-Type": "application/json"})
-    try:
-        ref = results.store(encoded, _producer(caller), verb)
-    except Exception:
-        return (encoded, 200, {"Content-Type": "application/json"})
-    return _json({"ok": True, "verb": verb, "request_id": rid,
-                  "result_ref": {"id": ref, "bytes": len(encoded.encode()),
-                                 "mime": "application/json"}}, 200)
+    """The 200 envelope. Size is bounded downstream: the gateway caps inline
+    responses at 1 MB and returns isError on truncation."""
+    return _json({"ok": True, "verb": verb, "request_id": rid, **result}, 200)
 
 
 # An audit target is evidence, so a caller-supplied one is bounded the same way
