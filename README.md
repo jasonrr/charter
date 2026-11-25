@@ -44,8 +44,7 @@ state are told to mint explicit handles and pass them as ordinary tool
 arguments.
 
 Charter's gateway was already built that way — a fresh server per request, no
-Durable Object, no per-session state, and oversized results handed back as
-`charter://result/<id>` handles. That was a simplicity decision before it was a
+Durable Object, no per-session state. That was a simplicity decision before it was a
 compliance one: a gateway that holds one credential and translates has nothing
 to keep between calls. It means the revision that gives session-backed
 deployments a migration gives charter nothing to do.

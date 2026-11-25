@@ -205,12 +205,6 @@ Add the endpoint to `.mcp.json`:
 The client discovers the OAuth metadata, opens a browser, and you sign in with
 Google. No secret is pasted, and nothing is stored on your disk.
 
-Beyond the two tools (`charter_read`, `charter_call`), the gateway also serves
-one unlisted resource template, `charter://result/{id}`, backed by core's
-`result.read` with the caller's actor token — no new secrets, no new state;
-deployments without `RESULTS_BUCKET` on core simply never emit a `result_ref`,
-and the resource surface sits idle.
-
 ## Connecting an upstream account (optional)
 
 Signing in tells charter who you are. Acting as you *inside another system* —
@@ -461,16 +455,8 @@ runbook (the top-level config), and staging stays alive as pre-prod.
   the model a broken result and tell it that it worked; instead a truncated
   response is returned with `isError: true` even though the HTTP call succeeded.
   The model sees a failure it can act on rather than silently wrong data. This
-  is now defense in depth: the designed answer is resource-link-out
-  (`docs/remote-mcp.md` §4.5), which core's `bridge()` applies automatically
-  when `RESULTS_BUCKET` is configured — this cap only bites an unconfigured
-  deployment or a dead bucket.
-
-- **A result over 16 MiB is unfetchable through the gateway.**
-  `RESULT_FETCH_MAX_BYTES` (`gateway/src/results.ts`) bounds what
-  `resources/read` will pull back for a `charter://result/<id>` reference; a
-  result past that cap errors honestly rather than partially. Raise the
-  constant only with a reason.
+  cap is the only bound on result size: result offload to a resource link was
+  removed on 2026-11-25 (`docs/remote-mcp.md` §4.5).
 
 - **Sessions cost a Google round-trip past the one-hour mark.** The gateway
   re-mints the Google ID token on demand, but the re-minted token is never
@@ -616,13 +602,12 @@ runbook (the top-level config), and staging stays alive as pre-prod.
   as before. Add an origin only when you control what can be served from it, and
   prefer telling a client to use its loopback flow.
 
-  **Forward path: Client ID Metadata Documents (CIMD).** A `SHOULD` in the
-  2026-07-28 draft, with dynamic client registration deprecated but retained for
-  back-compat. CIMD makes the client id a fetchable URL, so the consent screen
-  can show a name and origin the gateway *verified* rather than merely
-  displaying. That is what makes consent trustworthy instead of only present —
-  today's screen still asks a human to recognise an origin. Not implemented on
-  this branch; tracked as follow-up.
+  **Client ID Metadata Documents (CIMD) are enabled; the consent page has not
+  caught up.** CIMD makes the client id a fetchable URL, and the gateway
+  accepts it (see "CIMD is enabled" above). The consent page still shows only
+  the redirect URI's origin, not a name verified from the client's metadata
+  document, so it still asks a human to recognise an origin. Showing the
+  verified name is the open follow-up.
 
 - **`index.ts` wiring is tested in CI, but keep the deploy-time curls.** The
   suite runs inside workerd via `@cloudflare/vitest-pool-workers`, so
@@ -630,7 +615,7 @@ runbook (the top-level config), and staging stays alive as pre-prod.
   — consent required at `/callback`, signature-before-parse, the 401
   `resource_metadata` decoration — alongside the per-module unit tests
   (`prm.ts`, `routes.ts`, `gateway_url.ts`, `redirect_uri.ts`, `state.ts`,
-  `core.ts`, `redact.ts`, `google.ts`, `tools.ts`, `results.ts`). The
+  `core.ts`, `redact.ts`, `google.ts`, `tools.ts`). The
   Verifying section's curls remain worth running on every deploy: they check
   the *deployed* Worker and its config, which no test of the source can.
 
@@ -657,6 +642,7 @@ runbook (the top-level config), and staging stays alive as pre-prod.
 - It never forwards the client's MCP token upstream — the MCP spec forbids
   passthrough. Core sees the caller's *Google* ID token, which the gateway
   cannot forge, plus the CF Access pair.
-- **HubSpot connect is not available through the gateway yet.** That flow needs a
-  loopback listener the old proxy had. Verbs needing a HubSpot identity return
-  `hs_identity_required` until it is re-hosted.
+- It **exchanges no upstream code** for connect. HubSpot connect runs through
+  the gateway's `/connect/<id>` routes (see "Connecting an upstream account"
+  above and `docs/remote-mcp.md` §4.8); the gateway holds no HubSpot secret,
+  and core spends the code.

@@ -247,14 +247,24 @@ the token the gateway receives from the client is never forwarded upstream;
 upstream calls use a separate credential the gateway holds as its own client.
 That is exactly §4.4.
 
-### 4.4 CF Access moves from human to gateway
+### 4.4 The gateway-to-core hop
 
-Today every human's proxy carries a CF-Access service token. Now the public MCP
-endpoint is protected by OAuth, and the **gateway** holds one CF-Access service
-token to reach core over the existing tunnel. Net effect: CF Access on core is
-**unchanged**; we simply stop hand-distributing its credentials.
+The stdio proxy gave every human a CF-Access service token. The public MCP
+endpoint is now protected by OAuth, and humans carry no core credential at all.
+How the gateway reaches core depends on the backend:
 
-### 4.5 Payload: the standard MCP pattern (reference in, resource-link out)
+- **Cloudflare mode** (`CHARTER_BACKEND=cloudflare`, the current deployment):
+  core runs as a Cloudflare Container that the gateway Worker reaches over a
+  Durable Object binding (`CHARTER_CORE`, `gateway/src/container.ts`). The
+  container has no public URL, so there is no tunnel and no CF Access.
+- **GCP mode**: core runs on Cloud Run, optionally behind a CF-Access-gated
+  tunnel, in which case the gateway holds the one service token
+  (`CF_ACCESS_CLIENT_ID`/`CF_ACCESS_CLIENT_SECRET`).
+
+Either way the hop grants nothing: core verifies the caller's Google ID token
+itself (§2.1).
+
+### 4.5 Payload: the standard MCP pattern (reference in, bounded out)
 
 This is a **framework contract**, not a fix for RC's skills. The standard, as of
 the stable spec (2025-11-25) and confirmed across six established remote servers
@@ -263,8 +273,9 @@ the stable spec (2025-11-25) and confirmed across six established remote servers
 - **Large inputs go by reference, never by value.** Tool input is JSON-Schema
   only — no binary/file type. Every field-tested server takes an id / path / URI
   the server dereferences; none accept inline byte uploads. `roots` is deprecated,
-  resource-as-input never existed. The draft **SEP-2631** formalizes exactly this
-  (`authorizeUpload` → the tool arg stays a **file URI**, bytes move out-of-band).
+  resource-as-input never existed. **SEP-2631** proposed formalizing this
+  (`authorizeUpload` → a file URI) but was closed unmerged on 2026-10-14; its
+  successor is the experimental `io.modelcontextprotocol/files` extension.
 - **Large outputs go by reference above a threshold.** Inline small results;
   return a `resource_link` past a `maxInlineBytes` limit (GitHub 1 MB, PostHog
   12k chars are the reference points). Typed results use
@@ -276,16 +287,20 @@ the stable spec (2025-11-25) and confirmed across six established remote servers
 1. Inline what the **model authors** (small JSON). Pass large or pre-existing
    artifacts **by reference** (URI/id) and dereference inside the verb. No
    inline-base64 input field, ever. If charter later needs true client upload,
-   mirror SEP-2631's `authorizeUpload → file URI` control-plane — don't invent an
-   inline arg that has to be broken later. The `gdrive` reference pack's
-   `gdrive.file.initiate_upload` is that mirror: the server returns a Drive
-   resumable-session URI, the client PUTs the bytes out-of-band.
-2. Return typed `structuredContent`; above `maxInlineBytes`, return a reference,
-   not bytes. On remote the **server side** holds the blob — there is no
+   use the files extension (`io.modelcontextprotocol/files`): the tool call
+   returns resultType `upload_required` with PUT targets, and the client retries
+   with `requestState`. Don't invent an inline arg that has to be broken later.
+   (A `gdrive.file.initiate_upload` mirror of SEP-2631 was removed on
+   2026-11-25 when that SEP closed. Claude also sends files only to connectors
+   listed in the Connectors Directory.)
+2. Return a bounded result. The gateway caps a response at 1 MB inline and
+   returns `isError: true` on truncation; a verb with a large body returns
+   counts and a preview, or writes the body somewhere and returns a reference
+   to it. On remote the **server side** holds any blob — there is no
    client-disk analog of today's `args_path`/`out_path`.
 
 The client-side `args_path`/`out_path` tricks are **stdio-era**; they collapse
-into reference-in / resource-link-out and are dropped for the gateway path.
+into reference-in / bounded-out and are dropped for the gateway path.
 
 **RC's three skills are just instances of the contract** (measured 2026-07-25,
 real builders; no payload embeds binary — covers are URLs):
@@ -304,34 +319,26 @@ reproduces the 60 KB body. The diagnostic contract is `structuredContent`:
 `build_post.py` already emits `turns=110 glossary_links=2 body_bytes=61539` — the
 verb returns those (plus a preview) instead of printing them.
 
-`ponytail:` adopt the standard (reference-in, threshold-linked-out); no bespoke
+`ponytail:` adopt the standard (reference-in, bounded-out); no bespoke
 blob store, no per-payload special cases.
 
-**What C shipped: automatic offload + `result.read` + a gateway resource.**
-Core's `bridge()` measures every success envelope; past `MAX_INLINE_BYTES`
-(default 256 KiB) with `RESULTS_BUCKET` configured, the body is written to GCS
-(`src/charter/results.py` — producer- and verb-tagged, unguessable id) and the
-response becomes `{"ok": true, "verb", "request_id", "result_ref": {"id",
-"bytes", "mime"}}`. The gateway translates that envelope into an MCP
-`resource_link` (`charter://result/<id>`, a custom scheme the spec permits)
-and serves `resources/read` for it — an unlisted resource template — by
-calling the engine verb `result.read` with the caller's actor token. A
-dereference therefore re-authorizes through core like any other call:
-`result.read` is always-allowed (like `verbs.list`) because its authorization
-is *ownership* — core returns a blob only to the caller record that produced
-it, and a missing id answers exactly like someone else's id (`result_unknown`,
-404). References are unguessable *and* re-checked, not capability URLs.
-Objects expire by bucket lifecycle rule (one day — the deployment runbook owns
-it); core never deletes, and a vanished resource means "re-run the verb."
+**What C shipped, and why it was removed (2026-11-25).** C shipped automatic
+offload: past `MAX_INLINE_BYTES` with `RESULTS_BUCKET` set, core wrote the
+success envelope to GCS and returned a `result_ref`, which the gateway turned
+into a `resource_link` (`charter://result/<id>`) served by an engine verb,
+`result.read`. All of it was removed on 2026-11-25:
 
-Offload is fail-open and bridge-side: verbs keep returning plain dicts, so
-the authoring contract above costs pack authors nothing, and a dead bucket
-falls back to the inline body — which the gateway's 1 MB cap still bounds,
-with `isError: true` on truncation, exactly the pre-C interim behaviour, now
-as defense in depth. The dereference path reads at a larger cap (16 MiB,
-`gateway/src/results.ts`) because resource contents are fetched by the client
-on request rather than pushed into a model's context; a result past that cap
-fails honestly (§7.2 — no heavier blob apparatus). `structuredContent` +
+- it was GCS-only, so it could not run in Cloudflare mode;
+- no deployment ever set `RESULTS_BUCKET`, so it never ran anywhere;
+- Claude's connector docs do not list `resource_link` support, so the
+  reference would not have reached the model.
+
+What stands now: reference-in stays the rule. Large outputs are bounded by the
+gateway's 1 MB inline cap (`gateway/src/core.ts`), with `isError: true` on
+truncation, so the model gets a failure it can act on rather than broken JSON.
+If a real need for large outputs appears, the path is the files extension's
+download targets, not SEP-2631 and not a charter-specific blob store.
+`structuredContent` +
 `outputSchema` remain deliberately unadopted: the two generic tools have no
 per-verb output schema to declare, and the spec has structured results also
 serialized into a text block, doubling their context cost — revisit with
@@ -439,9 +446,12 @@ servers." It applies to this architecture exactly: one static upstream Google
 client id, open registration, forwarding to a third-party AS. The page shows the
 redirect URI's **origin**, never `client_name` — the name is whatever the
 registrant typed and is never verified, so it is the field an attacker uses to
-look like charter. `ponytail:` Client ID Metadata Documents (a `SHOULD` in
-2026-07-28) would let consent show a *verified* name and origin; today's screen
-still asks a human to recognise one. Not implemented; tracked as follow-up.
+look like charter. Client ID Metadata Documents (a `SHOULD` in 2026-07-28) are
+enabled (2026-07-29, §5): `clientIdMetadataDocumentEnabled: true` in
+`gateway/src/index.ts`, and the authorization-server metadata advertises
+`client_id_metadata_document_supported`. The consent page has not caught up: it
+still shows only the redirect URI's origin, not a name verified from the
+client's metadata document. Showing that verified name is the open follow-up.
 
 ### 4.8 Upstream connect: acting as the user in someone else's system (added 2026-07-28)
 
@@ -622,13 +632,14 @@ Broken per the writing-plans scope check; each ships and tests on its own.
 |---|---|---|---|
 | **A** | **Core: grants** — `identify_by_actor` + grants loader, fail-closed | nothing | **written** (`plans/2026-07-25-remote-mcp-grants.md`) |
 | **B** | **Gateway** — MCP over Streamable HTTP + OAuth federating Google; translates to core. Ships on whichever revision the SDK speaks; dual-era is automatic (§5) | A ✓, §5 ✓ | **landed** — the code is `gateway/src/`; the plan (`docs/superpowers/plans/2026-07-25-remote-mcp-gateway.md`) is **superseded, do not execute** |
-| **C** | **Payload contract** — adopt reference-in / resource-link-out (§4.5); inline blog+email, podcast takes a Drive reference; document in the pack-authoring skill | measurement ✓ | **landed** (plan: plans/2026-07-26-remote-mcp-payload-contract.md) |
+| **C** | **Payload contract** — adopt reference-in / resource-link-out (§4.5; resource-link-out removed 2026-11-25); inline blog+email, podcast takes a Drive reference; document in the pack-authoring skill | measurement ✓ | **landed** (plan: plans/2026-07-26-remote-mcp-payload-contract.md) |
 | **D** | **Distribution repackage + proxy removal** — plugin becomes a remote-HTTP pointer (`{"type":"http"}`) carrying skills; **delete** `plugin/proxy/` and `desktop-extension/`; update `INSTALL.md`/`distribution.md` | B | after B works |
 
 **Seam A↔B:** core accepts a caller derived from `X-Actor-Token` + grants,
-reached only through the CF-Access-gated tunnel. The gateway's only contract
-with core is "present a valid Google ID token, through the tunnel, with no
-`X-API-Key` beside it." Core verifies the token itself and derives scope from
+reached only through the gateway's private hop (§4.4: a Durable Object binding
+to the Container in Cloudflare mode, a CF-Access-gated tunnel in GCP mode). The
+gateway's only contract with core is "present a valid Google ID token, over
+that hop, with no `X-API-Key` beside it." Core verifies the token itself and derives scope from
 grants (§2.1, §4.1) — the no-key half is what makes that sentence true rather
 than aspirational.
 
@@ -652,7 +663,8 @@ and the old "C and D follow B" disagreed; the resolution is that C is two
 contracts. *Reference-in* (large args by URI/id, dereferenced inside the verb)
 is core- and pack-side, independent of the gateway, and shippable alongside or
 before B. *Resource-link-out* is emitted in MCP content blocks by the gateway, so
-that half needs B. Split C when it is planned.
+that half needs B. Split C when it is planned. (Resource-link-out was later
+removed; see §4.5.)
 
 ## 7. Deprecation and non-goals
 
@@ -699,8 +711,11 @@ build it until something actually needs it.
   Resources, Pagination](https://modelcontextprotocol.io/specification/2025-11-25/server/tools);
   no in-spec upload channel (input is JSON-Schema-only, no binary type). Draft
   [SEP-2631 File Objects & Transfer](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2631)
-  is the proposal that will add `authorizeUpload → file URI` — **draft, not in the
-  2026-07-28 revision**; do not plan around it. `roots` deprecated by SEP-2577 in
+  proposed `authorizeUpload → file URI`; it was **closed unmerged on
+  2026-10-14**. Its successor is the experimental `io.modelcontextprotocol/files`
+  extension (uploads: the tool call returns resultType `upload_required` with
+  PUT targets and the client retries with `requestState`; download targets for
+  large outputs). `roots` deprecated by SEP-2577 in
   2026-07-28 (that SEP number is correct; it was only ever mis-*described* here as
   a large-payload finding), whose migration guidance — pass files "via tool
   parameters, resource URIs, or server configuration" — is this same pattern.
