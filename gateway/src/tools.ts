@@ -17,7 +17,6 @@
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { callCore, type CoreConfig } from "./core.js";
-import { parseResultRef, RESULT_URI_PREFIX } from "./results.js";
 
 export const TOOL_READ_NAME = "charter_read";
 export const TOOL_CALL_NAME = "charter_call";
@@ -36,9 +35,8 @@ export const TOOL_READ_DESCRIPTION =
   "has a schema verb that returns the table catalog plus an analyst guide with " +
   "dialect gotchas and business definitions. Unsure which resource? Call BOTH " +
   "`.schema` verbs — they're cheap and each guide cross-links the other. " +
-  "To DRAFT or PUBLISH content, use charter_call instead. Oversized results " +
-  "come back as a resource_link (charter://result/<id>) — read the linked " +
-  "resource only if the inline summary is not enough.";
+  "To DRAFT or PUBLISH content, use charter_call instead. Results over 1 MB " +
+  "are truncated and returned as an error — narrow the query instead.";
 
 export const TOOL_CALL_DESCRIPTION =
   "Call a charter verb. Pass the verb name and its args; returns the engine's " +
@@ -50,9 +48,8 @@ export const TOOL_CALL_DESCRIPTION =
   "(e.g. denied = your account lacks scope for that verb; confirm_required = " +
   "pass confirm:true for irreversible verbs). Large inputs go by reference: " +
   "pass an id or URI the " +
-  "verb dereferences, never a large inline body. Oversized results come back " +
-  "as a resource_link (charter://result/<id>) — read the linked resource " +
-  "only if the inline summary is not enough.";
+  "verb dereferences, never a large inline body. Results over 1 MB are " +
+  "truncated and returned as an error.";
 
 /**
  * Annotations, carried over verbatim from the removed stdio proxy (see git
@@ -77,12 +74,7 @@ export const TOOL_CALL_ANNOTATIONS: ToolAnnotations = {
   openWorldHint: true,
 };
 
-// `text?: undefined` on the resource_link variant isn't part of the wire
-// shape — it's there so `content[N].text` (existing tests, indexing into a
-// now-heterogeneous array) still typechecks without narrowing first.
-type ContentBlock =
-  | { type: "text"; text: string }
-  | { type: "resource_link"; uri: string; name: string; description: string; mimeType: string; text?: undefined };
+type ContentBlock = { type: "text"; text: string };
 
 type ToolResult = {
   content: ContentBlock[];
@@ -110,30 +102,5 @@ export async function handleTool(
     args.args ?? {},
     { readOnly: toolName === TOOL_READ_NAME, actorToken, traceparent },
   );
-  // §4.5 resource-link-out: core offloaded this result; hand the model a
-  // reference, not bytes. Only on a clean success — an error body that merely
-  // looks like a ref must stay an error.
-  const ref = !isError ? parseResultRef(text) : null;
-  if (ref) {
-    return {
-      content: [
-        {
-          type: "text",
-          text:
-            `Result is ${ref.bytes} bytes — too large to inline. ` +
-            `It is available as a resource if you need the full body; ` +
-            `it expires, and re-running the verb regenerates it.`,
-        },
-        {
-          type: "resource_link",
-          uri: RESULT_URI_PREFIX + ref.id,
-          name: `${args.verb ?? "verb"} result`,
-          description: "Full verb result, offloaded by size. Read only if the inline summary is not enough.",
-          mimeType: ref.mime,
-        },
-      ],
-      isError: false,
-    };
-  }
   return { content: [{ type: "text", text }], isError };
 }
