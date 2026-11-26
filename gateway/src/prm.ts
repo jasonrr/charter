@@ -39,13 +39,15 @@ const PRM_ROOT = "/.well-known/oauth-protected-resource";
 /**
  * RFC 9728 §3.1 inserts the well-known segment before the resource's path, so
  * `https://gw/mcp` is described at `https://gw/.well-known/oauth-protected-resource/mcp`.
- * The MCP spec has clients probe that path-suffixed form first and the bare
- * root second, so both are served — each describing the resource its own URL
- * identifies, since a client that derived the URL will check `resource` against it.
+ * Only that document is served. The bare root would have to name the bare
+ * origin (RFC 9728 §3.3 requires `resource` to match the URL it was derived
+ * from), and 1.x binds every token to `<origin>/mcp`, so the provider would
+ * refuse a client that bound to it. The bare root falls through to the
+ * provider, which answers 404. MCP clients try the path-suffixed URL first,
+ * and the 401's `resource_metadata` names it.
  */
 export function protectedResourceOf(pathname: string): string | null {
   if (pathname === `${PRM_ROOT}${MCP_PATH}`) return MCP_PATH;
-  if (pathname === PRM_ROOT) return "";
   return null;
 }
 
@@ -55,7 +57,7 @@ export function resourceMetadataUrl(origin: string): string {
 }
 
 /**
- * The metadata document for one of the two served paths.
+ * The metadata document for the served path.
  *
  * `authorization_servers` is the gateway itself: it is its own authorization
  * server for MCP clients (Google is federated behind it, and clients never

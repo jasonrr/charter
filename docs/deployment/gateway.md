@@ -300,8 +300,8 @@ like a gateway with no OAuth at all:
 Expect `resource` equal to `https://<your-gateway-host>/mcp`,
 `authorization_servers` listing `https://<your-gateway-host>`, and
 `bearer_methods_supported` of `["header"]`. The bare
-`/.well-known/oauth-protected-resource` is served too, describing the origin
-itself rather than `/mcp` — clients probe both. Both are built from
+`/.well-known/oauth-protected-resource` answers 404: tokens are bound to `/mcp`,
+and clients find the path-suffixed document first. The document is built from
 `CHARTER_GATEWAY_URL`, so a `resource` that isn't the host you curled means that
 var is stale (see step 4).
 
@@ -309,10 +309,10 @@ var is stale (see step 4).
 the happy path:
 
 - `code_challenge_methods_supported` (above) is exactly `["S256"]` — `plain`
-  is refused at `/authorize` (`allowPlainPKCE: false` in `src/index.ts`), and
+  is refused at `/authorize` (S256-only is the provider's 1.x default), and
   a request naming no method defaults to `plain`, so PKCE is effectively
   required. If you see `"plain"` in the list, the deploy is running a stale
-  build or a provider older than 0.8.
+  build or a provider older than 1.2.
 - Unauthenticated `POST /mcp` returns `401`, and its `WWW-Authenticate` header
   carries `resource_metadata="https://<your-gateway-host>/.well-known/oauth-protected-resource/mcp"`:
 
@@ -421,6 +421,26 @@ In order:
 5. Update the installed plugin (`claude plugin install charter@charter`);
    verify per `INSTALL.md` step 7.
 
+### Provider 1.x resource
+
+Since `@cloudflare/workers-oauth-provider` 1.x, every grant and token is bound to exactly
+`<CHARTER_GATEWAY_URL origin>/mcp`. Changing `CHARTER_GATEWAY_URL`'s origin signs every user
+out. A mismatch shows as `401 invalid_token` on `/mcp` or `400 invalid_grant` / `invalid_target`
+on refresh.
+
+Before deploying a provider upgrade, check what live grants carry (run in `gateway/`, with the
+deployment's wrangler config):
+
+    npx wrangler kv key list --binding OAUTH_KV --remote --prefix grant: --config <config> \
+      | jq -r '.[].name' | while read -r key; do
+          npx wrangler kv key get --binding OAUTH_KV --remote --config <config> "$key" | jq -r .resource
+        done | sort | uniq -c
+
+Grants carrying any other value sign in once more after the deploy. Grants with no `resource`
+bind to `/mcp` on their next refresh. CIMD clients' grants are no longer revoked when the same
+user signs in again (1.4: their client_id is shared by every installation), so they accumulate
+until they expire.
+
 ## Staging
 
 A staging gateway is a fully parallel deployment — Worker
@@ -489,7 +509,7 @@ runbook (the top-level config), and staging stays alive as pre-prod.
 - **PKCE S256 is required (fixed 2026-07-26).** Earlier provider versions
   hard-coded `code_challenge_methods_supported: ["plain", "S256"]` with no
   hook to withdraw `plain`, and this entry documented that as left-as-is.
-  Provider `0.8.x` added `allowPlainPKCE`; the gateway sets it `false`, so
+  Provider 1.2 removed plain PKCE entirely, so
   `plain` — including a request naming no method, which defaults to `plain` —
   is refused at `/authorize` with a legible error, and the metadata advertises
   only `["S256"]`. Two upgrade notes from the same `0.0.5 → 0.8.2` jump:

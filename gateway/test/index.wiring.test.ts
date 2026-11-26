@@ -356,6 +356,22 @@ describe("CIMD (client_id as a metadata document URL)", () => {
     expect(await res.text()).toContain("will not send an authorization code");
   });
 
+  it("renders a local 400, never a redirect or the URL, when the metadata document can't be fetched", async () => {
+    vi.stubGlobal("fetch", (async () => new Response("down", { status: 503 })) as typeof fetch);
+    const res = await call(fullEnv(), "/authorize?" + new URLSearchParams({
+      response_type: "code",
+      client_id: CIMD_URL,
+      redirect_uri: "https://client.example/cb",
+      state: "s",
+      code_challenge: await s256(VERIFIER),
+      code_challenge_method: "S256",
+    }).toString());
+    const body = await res.text();
+    expect(res.status).toBe(400);
+    expect(res.headers.get("Location")).toBeNull();
+    expect(body).not.toContain(CIMD_URL);
+  });
+
   it("accepts a CIMD client with a loopback redirect_uri", async () => {
     // Positive control: same route, same document shape, and the only
     // difference is a redirect_uri that cannot be collected remotely.
@@ -373,7 +389,7 @@ describe("CIMD (client_id as a metadata document URL)", () => {
   });
 });
 
-describe("PKCE S256 enforcement (allowPlainPKCE: false)", () => {
+describe("PKCE S256 enforcement", () => {
   it("advertises only S256 in the authorization-server metadata", async () => {
     const res = await call(fullEnv(), "/.well-known/oauth-authorization-server");
     expect(res.status).toBe(200);
@@ -451,6 +467,25 @@ describe("401 resource_metadata decoration (RFC 9728 discovery mechanism 1)", ()
     const res = await call(env, "/mcp", { method: "POST" });
     expect(res.status).toBe(401);
     expect(res.headers.get("WWW-Authenticate") ?? "").not.toContain("resource_metadata");
+  });
+});
+
+describe("protected-resource metadata through the worker", () => {
+  it("serves the /mcp document and 404s the bare root", async () => {
+    const doc = await call(fullEnv(), "/.well-known/oauth-protected-resource/mcp");
+    expect(doc.status).toBe(200);
+    expect(((await doc.json()) as { resource: string }).resource).toBe(`${ORIGIN}/mcp`);
+    const root = await call(fullEnv(), "/.well-known/oauth-protected-resource");
+    await root.text();
+    expect(root.status).toBe(404);
+  });
+
+  it("keeps the named sign-in 503 when CHARTER_GATEWAY_URL is invalid (provider construction never pre-empts it)", async () => {
+    const env = fullEnv({ CHARTER_GATEWAY_URL: "not a url" });
+    const authorize = await call(env, "/authorize?response_type=code&client_id=x");
+    const text = await authorize.text();
+    expect(authorize.status).toBe(503);
+    expect(text).toContain("CHARTER_GATEWAY_URL");
   });
 });
 
@@ -556,5 +591,19 @@ describe("OAuth end to end (authorize → token → /mcp → refresh)", () => {
     const body = await res.text();
     expect(res.status, body).toBe(200);
     expect((await mcpInitialize(env, (JSON.parse(body) as Tokens).access_token)).status).toBe(200);
+  });
+
+  it("refuses a refresh for the bare origin: grants are bound to /mcp exactly", async () => {
+    const env = fullEnv();
+    const { clientId, tokens } = await signIn(env);
+    const res = await refresh(env, clientId, tokens.refresh_token, ORIGIN);
+    expect(res.status).toBe(400);
+    const { error } = (await res.json()) as { error: string };
+    expect(["invalid_target", "invalid_grant"]).toContain(error);
+  });
+
+  it("rejects a bearer token it never issued", async () => {
+    const res = await mcpInitialize(fullEnv(), "not-a-real-token");
+    expect(res.status).toBe(401);
   });
 });
