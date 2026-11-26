@@ -439,7 +439,8 @@ deployment's wrangler config):
 Grants carrying any other value sign in once more after the deploy. Grants with no `resource`
 bind to `/mcp` on their next refresh. CIMD clients' grants are no longer revoked when the same
 user signs in again (1.4: their client_id is shared by every installation), so they accumulate
-until they expire.
+until they expire, and signing in again does not invalidate an earlier refresh token. To cut one
+off, delete its `grant:` key.
 
 ## Staging
 
@@ -513,10 +514,11 @@ runbook (the top-level config), and staging stays alive as pre-prod.
   `plain` — including a request naming no method, which defaults to `plain` —
   is refused at `/authorize` with a legible error, and the metadata advertises
   only `["S256"]`. Two upgrade notes from the same `0.0.5 → 0.8.2` jump:
-  the provider now decorates its own `/mcp` 401s with a `resource_metadata`
-  URL derived from the *request's* origin — Host-steerable, so the gateway
-  strips and replaces it with the `CHARTER_GATEWAY_URL`-derived one
-  (`withResourceMetadata` in `src/index.ts`); and it supports CIMD behind the
+  the provider decorates its own `/mcp` 401s with a `resource_metadata` URL
+  (0.x derived it from the Host; 1.x uses the configured resource and omits
+  it for foreign-origin requests), so the gateway strips it and always sets
+  the `CHARTER_GATEWAY_URL`-derived one (`withResourceMetadata` in
+  `src/index.ts`); and it supports CIMD behind the
   `global_fetch_strictly_public` compatibility flag.
 - **CIMD is enabled (2026-07-29).** Spec revision `2026-07-28` deprecates
   Dynamic Client Registration in favour of Client ID Metadata Documents: a

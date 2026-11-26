@@ -557,8 +557,10 @@ const authHandler = {
         }
         // parseAuthRequest throws on an unregistered redirect URI, which is the
         // first thing an operator gets wrong. An unhandled throw here is a bare
-        // 500 with nothing to act on, so name the likely cause. Its messages are
-        // fixed library strings — no secrets, no caller input.
+        // 500 with nothing to act on, so name the likely cause. Its messages can
+        // echo the caller's own query values (e.g. an unknown response_type);
+        // the page is text/plain and goes only to that caller, so that is safe.
+        // CIMD fetch errors, which carry fetched-URL detail, are caught above.
         return browserError(
           "charter could not start sign-in for this client.\n\n" +
             "The usual cause is that the client's redirect_uri is not " +
@@ -925,9 +927,9 @@ const authHandler = {
 
     // "/" identifies the deployment to a human who lands on it. Everything
     // else is 404, not a cheerful 200: this handler is the provider's
-    // catch-all, so it is what answered `/.well-known/oauth-protected-resource`
-    // — an unparseable 200 where a client expected metadata or a 404, which is
-    // how the missing PRM endpoint (prm.ts) stayed invisible.
+    // catch-all, and a 200 here once answered `/.well-known/oauth-protected-resource`
+    // where a client expected metadata or a 404, which is how the missing PRM
+    // endpoint (prm.ts) stayed invisible.
     if (url.pathname === "/") {
       return new Response("charter-gateway", { status: 200 });
     }
@@ -938,10 +940,6 @@ const authHandler = {
   },
 };
 
-// OAuthProvider types both handler slots as `ExportedHandler` with the env
-// fixed to `unknown` rather than leaving it generic, so no handler that names
-// its own Env is assignable. The casts buy back the Env typing above; the
-// provider passes the Worker's real env through untouched.
 // An origin that never matches a real request, used only when
 // CHARTER_GATEWAY_URL is invalid. With it the provider still constructs,
 // so /call and the named sign-in 503s (gatewayUrlProblem/missingConfig)
@@ -959,6 +957,10 @@ function providerFor(origin: string): OAuthProvider {
   return cached.provider;
 }
 
+// OAuthProvider types both handler slots as `ExportedHandler` with the env
+// fixed to `unknown` rather than leaving it generic, so no handler that names
+// its own Env is assignable. The casts buy back the Env typing above; the
+// provider passes the Worker's real env through untouched.
 function makeProvider(origin: string): OAuthProvider {
   return new OAuthProvider({
     apiRoute: MCP_PATH,
@@ -974,6 +976,7 @@ function makeProvider(origin: string): OAuthProvider {
     // out: see docs/deployment/gateway.md "Provider 1.x resource".
     resourceMetadata: { resource: `${origin}${MCP_PATH}` },
     // S256-only PKCE is the 1.x default (plain was removed in 1.2).
+    //
     // Client ID Metadata Documents: a client_id that is an https URL resolves to
     // a JSON document describing the client, instead of the client POSTing itself
     // to /register. Spec 2026-07-28 deprecates Dynamic Client Registration in

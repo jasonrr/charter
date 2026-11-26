@@ -446,9 +446,9 @@ describe("401 resource_metadata decoration (RFC 9728 discovery mechanism 1)", ()
   });
 
   it("advertises the configured origin even when the request arrives on a foreign Host", async () => {
-    // The provider (>=0.8) decorates 401s itself with a URL derived from the
-    // request's own origin — steerable by whoever set the Host. The gateway
-    // must replace it with the configured one (same reason as prm.ts).
+    // Provider 1.x omits resource_metadata for a foreign-origin request (0.x
+    // derived it from the Host). Either way the gateway must advertise the
+    // configured one (same reason as prm.ts).
     const request = new IncomingRequest("https://evil.example.net/mcp", { method: "POST" });
     const ctx = createExecutionContext();
     const res = await worker.fetch(request, fullEnv(), ctx);
