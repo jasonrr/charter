@@ -15,6 +15,7 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpHandler } from "agents/mcp";
 import OAuthProvider, {
+  CimdFetchError,
   type AuthRequest,
   type OAuthHelpers,
   type OAuthProviderOptions,
@@ -546,10 +547,20 @@ const authHandler = {
           Math.floor(Date.now() / 1000),
         );
       } catch (e) {
+        if (e instanceof CimdFetchError) {
+          console.warn("cimd fetch failed", { reason: e.reason });
+          return browserError(
+            "charter could not start sign-in for this client: its client metadata " +
+              "document could not be fetched or is invalid.",
+            400,
+          );
+        }
         // parseAuthRequest throws on an unregistered redirect URI, which is the
         // first thing an operator gets wrong. An unhandled throw here is a bare
-        // 500 with nothing to act on, so name the likely cause. Its messages are
-        // fixed library strings — no secrets, no caller input.
+        // 500 with nothing to act on, so name the likely cause. Its messages can
+        // echo the caller's own query values (e.g. an unknown response_type);
+        // the page is text/plain and goes only to that caller, so that is safe.
+        // CIMD fetch errors, which carry fetched-URL detail, are caught above.
         return browserError(
           "charter could not start sign-in for this client.\n\n" +
             "The usual cause is that the client's redirect_uri is not " +
@@ -916,9 +927,9 @@ const authHandler = {
 
     // "/" identifies the deployment to a human who lands on it. Everything
     // else is 404, not a cheerful 200: this handler is the provider's
-    // catch-all, so it is what answered `/.well-known/oauth-protected-resource`
-    // — an unparseable 200 where a client expected metadata or a 404, which is
-    // how the missing PRM endpoint (prm.ts) stayed invisible.
+    // catch-all, and a 200 here once answered `/.well-known/oauth-protected-resource`
+    // where a client expected metadata or a 404, which is how the missing PRM
+    // endpoint (prm.ts) stayed invisible.
     if (url.pathname === "/") {
       return new Response("charter-gateway", { status: 200 });
     }
@@ -929,39 +940,81 @@ const authHandler = {
   },
 };
 
+// One provider per configured origin. The resource comes from env, so it
+// can't be built at module scope, and the constructor holds a per-instance
+// JWKS cache for CIMD private_key_jwt clients, so it isn't rebuilt per
+// request. The origin is constant per deployment; tests vary it per env.
+//
+// null means the origin can't back a provider: the provider rejects some
+// origins that gatewayOrigin accepts (e.g. a `{` in the host). That outcome is
+// a pure function of the origin, so it is cached with it and logged once; a
+// corrected CHARTER_GATEWAY_URL is a different origin and builds afresh.
+let cached: { origin: string; provider: OAuthProvider | null } | undefined;
+function providerFor(origin: string): OAuthProvider | null {
+  if (cached?.origin !== origin) {
+    let provider: OAuthProvider | null = null;
+    try {
+      provider = makeProvider(origin);
+    } catch (err) {
+      console.error(
+        `charter-gateway: cannot build the OAuth provider for CHARTER_GATEWAY_URL origin ${origin}: ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+    cached = { origin, provider };
+  }
+  return cached.provider;
+}
+
+/**
+ * The paths OAuthProvider answers itself, matched the way it matches them:
+ * /token, /register and the authorization-server metadata exactly, /mcp and
+ * everything under /mcp/. Everything else reaches `authHandler` regardless.
+ */
+function isProviderPath(pathname: string): boolean {
+  return (
+    pathname === "/token" ||
+    pathname === "/register" ||
+    pathname === "/.well-known/oauth-authorization-server" ||
+    pathname === MCP_PATH ||
+    pathname.startsWith(`${MCP_PATH}/`)
+  );
+}
+
 // OAuthProvider types both handler slots as `ExportedHandler` with the env
 // fixed to `unknown` rather than leaving it generic, so no handler that names
 // its own Env is assignable. The casts buy back the Env typing above; the
 // provider passes the Worker's real env through untouched.
-const provider = new OAuthProvider({
-  apiRoute: "/mcp",
-  apiHandler: apiHandler as unknown as OAuthProviderOptions["apiHandler"],
-  defaultHandler:
-    authHandler as unknown as OAuthProviderOptions["defaultHandler"],
-  authorizeEndpoint: "/authorize",
-  tokenEndpoint: "/token",
-  clientRegistrationEndpoint: "/register",
-  // OAuth 2.1 / MCP posture (spec §5): S256 only. With this set the provider
-  // rejects `plain` at parseAuthRequest — and a request with no
-  // code_challenge_method defaults to plain, so PKCE is effectively required —
-  // and advertises only ["S256"] in the authorization-server metadata, so
-  // clients are told the same thing they are handed. Needs provider >=0.8;
-  // before that there was no hook, which is why the runbook documented this
-  // as offered-not-required.
-  allowPlainPKCE: false,
-  // Client ID Metadata Documents: a client_id that is an https URL resolves to
-  // a JSON document describing the client, instead of the client POSTing itself
-  // to /register. Spec 2026-07-28 deprecates Dynamic Client Registration in
-  // favour of this; /register stays for authorization servers and clients that
-  // have not moved.
-  //
-  // Enabling it opens a second way in that screenRegistration cannot see — a
-  // CIMD client never registers, so its redirect_uris arrive from a document
-  // the gateway merely fetched. The redirect-URI policy is therefore enforced
-  // again at /authorize, where both kinds of client meet. Do not remove that
-  // check while this is true.
-  clientIdMetadataDocumentEnabled: true,
-});
+function makeProvider(origin: string): OAuthProvider {
+  return new OAuthProvider({
+    apiRoute: MCP_PATH,
+    apiHandler: apiHandler as unknown as OAuthProviderOptions["apiHandler"],
+    defaultHandler:
+      authHandler as unknown as OAuthProviderOptions["defaultHandler"],
+    authorizeEndpoint: "/authorize",
+    tokenEndpoint: "/token",
+    // 1.x turns DCR off by default; Claude and older clients still register here.
+    clientRegistrationEndpoint: "/register",
+    // Every grant and token is bound to this exact value (RFC 8707), and
+    // existing grants carry `${origin}/mcp`. Changing it signs every user
+    // out: see docs/deployment/gateway.md "Provider 1.x resource".
+    resourceMetadata: { resource: `${origin}${MCP_PATH}` },
+    // S256-only PKCE is the 1.x default (plain was removed in 1.2).
+    //
+    // Client ID Metadata Documents: a client_id that is an https URL resolves to
+    // a JSON document describing the client, instead of the client POSTing itself
+    // to /register. Spec 2026-07-28 deprecates Dynamic Client Registration in
+    // favour of this; /register stays for authorization servers and clients that
+    // have not moved.
+    //
+    // Enabling it opens a second way in that screenRegistration cannot see — a
+    // CIMD client never registers, so its redirect_uris arrive from a document
+    // the gateway merely fetched. The redirect-URI policy is therefore enforced
+    // again at /authorize, where both kinds of client meet. Do not remove that
+    // check while this is true.
+    clientIdMetadataDocumentEnabled: true,
+  });
+}
 
 function oauthError(error: string, description: string, status: number): Response {
   return new Response(JSON.stringify({ error, error_description: description }), {
@@ -983,6 +1036,7 @@ async function screenRegistration(
   request: Request,
   env: Env,
   ctx: ExecutionContext,
+  provider: OAuthProvider,
 ): Promise<Response | null> {
   let body: unknown;
   try {
@@ -1071,11 +1125,11 @@ function metadataResponse(body: unknown, status = 200): Response {
  * token check, never reaching our handler — a header on only half of them
  * would be worse than none.
  *
- * The provider (>=0.8) decorates its own 401s too, but derives the URL from
- * the request's origin — steerable by whoever set the Host, the exact thing
- * prm.ts pins to CHARTER_GATEWAY_URL. So any resource_metadata already on the
- * response is stripped and replaced with the configured one; with no valid
- * configured origin it is stripped and nothing is published.
+ * The provider decorates its own 401s too, but 1.x omits `resource_metadata`
+ * when the request's origin isn't the configured resource's, and this
+ * function supplies the configured URL in every case. Any resource_metadata
+ * already on the response is stripped and replaced with the configured one;
+ * with no valid configured origin it is stripped and nothing is published.
  */
 function withResourceMetadata(res: Response, origin: string | null): Response {
   const headers = new Headers(res.headers);
@@ -1106,6 +1160,10 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const origin = gatewayOrigin(env.CHARTER_GATEWAY_URL);
+    // With no usable origin the provider must not run: it would bind refreshed
+    // grants to a placeholder resource and 4xx clients into discarding tokens.
+    // An origin the provider refuses to build for is as unusable as none.
+    const provider = origin ? providerFor(origin) : null;
 
     // RFC 9728 protected-resource metadata (prm.ts). Served ahead of the
     // provider because it describes the MCP endpoint rather than the sign-in
@@ -1123,7 +1181,7 @@ export default {
           },
         });
       }
-      if (!origin) {
+      if (!origin || !provider) {
         return metadataResponse(
           {
             error: "server_error",
@@ -1137,8 +1195,21 @@ export default {
       return metadataResponse(protectedResourceMetadata(origin, resourcePath));
     }
 
+    // A 5xx keeps clients' tokens; the rest of the surface is authHandler, the
+    // provider's defaultHandler anyway, whose own checks name the problem.
+    if (!provider) {
+      if (isProviderPath(url.pathname)) {
+        return oauthError(
+          "temporarily_unavailable",
+          "charter-gateway is misconfigured: CHARTER_GATEWAY_URL is unset or invalid.",
+          503,
+        );
+      }
+      return authHandler.fetch(request, env);
+    }
+
     if (request.method === "POST" && url.pathname === "/register") {
-      const screened = await screenRegistration(request, env, ctx);
+      const screened = await screenRegistration(request, env, ctx, provider);
       if (screened) return screened;
     }
 

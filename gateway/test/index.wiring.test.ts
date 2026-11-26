@@ -54,7 +54,10 @@ async function call(
  * /authorize. Returns the signed (unconsented) state from the consent page's
  * hidden input and the flow cookie that binds it to "this browser".
  */
-async function startFlow(env: Env): Promise<{ state: string; cookie: string }> {
+async function startFlow(
+  env: Env,
+  extra: Record<string, string> = {},
+): Promise<{ state: string; cookie: string; clientId: string }> {
   const reg = await call(env, "/register", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -76,6 +79,7 @@ async function startFlow(env: Env): Promise<{ state: string; cookie: string }> {
         state: "client-state",
         code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
         code_challenge_method: "S256",
+        ...extra,
       }).toString(),
   );
   expect(authorize.status).toBe(200);
@@ -85,7 +89,7 @@ async function startFlow(env: Env): Promise<{ state: string; cookie: string }> {
   const cookie = authorize.headers.get("Set-Cookie")?.split(";")[0];
   expect(state).toBeTruthy();
   expect(cookie).toMatch(/^__Host-charter_state_/);
-  return { state: state!, cookie: cookie! };
+  return { state: state!, cookie: cookie!, clientId: client_id };
 }
 
 /** POST the consent form; returns the re-sealed, consented state Google would echo back. */
@@ -113,6 +117,32 @@ function spyOnUpstreamFetch(): string[] {
   }) as typeof fetch);
   return seen;
 }
+
+/** Answer Google's token endpoint with a usable identity for `email`. */
+function stubGoogleSignIn(email: string): void {
+  const b64url = (o: unknown) =>
+    btoa(JSON.stringify(o)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  // Unsigned on purpose: nothing in the gateway verifies this — core does
+  // (google.ts's header comment). decodeIdTokenClaims only reads the payload.
+  const idToken = `${b64url({ alg: "none" })}.${b64url({
+    email,
+    email_verified: true,
+    exp: Math.floor(Date.now() / 1000) + 3600,
+  })}.`;
+  vi.stubGlobal("fetch", (async () =>
+    new Response(
+      JSON.stringify({ id_token: idToken, refresh_token: "refresh-abc" }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    )) as typeof fetch);
+}
+
+const VERIFIER = "charter-e2e-verifier-0123456789-abcdefghijklmnop"; // RFC 7636: 43-128 chars of [A-Za-z0-9-._~]
+async function s256(verifier: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  return btoa(String.fromCharCode(...new Uint8Array(digest)))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+const RESOURCE = `${ORIGIN}/mcp`;
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -261,24 +291,6 @@ describe("/callback wiring order", () => {
     expect(back.searchParams.get("state")).toBe("client-state");
   });
 
-  /** Answer Google's token endpoint with a usable identity for `email`. */
-  function stubGoogleSignIn(email: string): void {
-    const b64url = (o: unknown) =>
-      btoa(JSON.stringify(o)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-    // Unsigned on purpose: nothing in the gateway verifies this — core does
-    // (google.ts's header comment). decodeIdTokenClaims only reads the payload.
-    const idToken = `${b64url({ alg: "none" })}.${b64url({
-      email,
-      email_verified: true,
-      exp: Math.floor(Date.now() / 1000) + 3600,
-    })}.`;
-    vi.stubGlobal("fetch", (async () =>
-      new Response(
-        JSON.stringify({ id_token: idToken, refresh_token: "refresh-abc" }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      )) as typeof fetch);
-  }
-
   async function consentedFlow(env: Env): Promise<{ state: string; cookie: string }> {
     const started = await startFlow(env);
     const state = await consent(env, started.state, started.cookie);
@@ -344,6 +356,22 @@ describe("CIMD (client_id as a metadata document URL)", () => {
     expect(await res.text()).toContain("will not send an authorization code");
   });
 
+  it("renders a local 400, never a redirect or the URL, when the metadata document can't be fetched", async () => {
+    vi.stubGlobal("fetch", (async () => new Response("down", { status: 503 })) as typeof fetch);
+    const res = await call(fullEnv(), "/authorize?" + new URLSearchParams({
+      response_type: "code",
+      client_id: CIMD_URL,
+      redirect_uri: "https://client.example/cb",
+      state: "s",
+      code_challenge: await s256(VERIFIER),
+      code_challenge_method: "S256",
+    }).toString());
+    const body = await res.text();
+    expect(res.status).toBe(400);
+    expect(res.headers.get("Location")).toBeNull();
+    expect(body).not.toContain(CIMD_URL);
+  });
+
   it("accepts a CIMD client with a loopback redirect_uri", async () => {
     // Positive control: same route, same document shape, and the only
     // difference is a redirect_uri that cannot be collected remotely.
@@ -361,7 +389,7 @@ describe("CIMD (client_id as a metadata document URL)", () => {
   });
 });
 
-describe("PKCE S256 enforcement (allowPlainPKCE: false)", () => {
+describe("PKCE S256 enforcement", () => {
   it("advertises only S256 in the authorization-server metadata", async () => {
     const res = await call(fullEnv(), "/.well-known/oauth-authorization-server");
     expect(res.status).toBe(200);
@@ -418,9 +446,9 @@ describe("401 resource_metadata decoration (RFC 9728 discovery mechanism 1)", ()
   });
 
   it("advertises the configured origin even when the request arrives on a foreign Host", async () => {
-    // The provider (>=0.8) decorates 401s itself with a URL derived from the
-    // request's own origin — steerable by whoever set the Host. The gateway
-    // must replace it with the configured one (same reason as prm.ts).
+    // Provider 1.x omits resource_metadata for a foreign-origin request (0.x
+    // derived it from the Host). Either way the gateway must advertise the
+    // configured one (same reason as prm.ts).
     const request = new IncomingRequest("https://evil.example.net/mcp", { method: "POST" });
     const ctx = createExecutionContext();
     const res = await worker.fetch(request, fullEnv(), ctx);
@@ -434,10 +462,215 @@ describe("401 resource_metadata decoration (RFC 9728 discovery mechanism 1)", ()
     expect(header).not.toContain("evil.example.net");
   });
 
-  it("leaves the 401 undecorated when CHARTER_GATEWAY_URL is invalid — never publishes a bad origin", async () => {
+  it("leaves the 503 undecorated when CHARTER_GATEWAY_URL is invalid — never publishes a bad origin", async () => {
     const env = fullEnv({ CHARTER_GATEWAY_URL: "not a url" });
     const res = await call(env, "/mcp", { method: "POST" });
-    expect(res.status).toBe(401);
+    await res.text();
+    expect(res.status).toBe(503);
     expect(res.headers.get("WWW-Authenticate") ?? "").not.toContain("resource_metadata");
+  });
+});
+
+describe("protected-resource metadata through the worker", () => {
+  it("serves the /mcp document and 404s the bare root", async () => {
+    const doc = await call(fullEnv(), "/.well-known/oauth-protected-resource/mcp");
+    expect(doc.status).toBe(200);
+    expect(((await doc.json()) as { resource: string }).resource).toBe(`${ORIGIN}/mcp`);
+    const root = await call(fullEnv(), "/.well-known/oauth-protected-resource");
+    await root.text();
+    expect(root.status).toBe(404);
+  });
+
+  it("keeps the named sign-in 503 when CHARTER_GATEWAY_URL is invalid (provider construction never pre-empts it)", async () => {
+    const env = fullEnv({ CHARTER_GATEWAY_URL: "not a url" });
+    const authorize = await call(env, "/authorize?response_type=code&client_id=x");
+    const text = await authorize.text();
+    expect(authorize.status).toBe(503);
+    expect(text).toContain("CHARTER_GATEWAY_URL");
+  });
+});
+
+describe("OAuth end to end (authorize → token → /mcp → refresh)", () => {
+  type Tokens = { access_token: string; refresh_token: string };
+
+  /**
+   * Full sign-in. By default sends RFC 8707 `resource` at /authorize and
+   * /token as Claude does; `{ resource: null }` signs in as a client that
+   * never sends one.
+   */
+  async function signIn(
+    env: Env,
+    opts: { resource?: string | null } = {},
+  ): Promise<{ clientId: string; tokens: Tokens }> {
+    const resource = opts.resource === undefined ? RESOURCE : opts.resource;
+    const withResource: Record<string, string> = resource ? { resource } : {};
+    const started = await startFlow(env, { code_challenge: await s256(VERIFIER), ...withResource });
+    const state = await consent(env, started.state, started.cookie);
+    stubGoogleSignIn("someone@example.com");
+    const cb = await call(env, `/callback?state=${encodeURIComponent(state)}&code=good`, {
+      headers: { Cookie: started.cookie },
+    });
+    await cb.text();
+    expect(cb.status).toBe(302);
+    const code = new URL(cb.headers.get("Location")!).searchParams.get("code")!;
+    const res = await call(env, "/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: REDIRECT_URI,
+        client_id: started.clientId,
+        code_verifier: VERIFIER,
+        ...withResource,
+      }).toString(),
+    });
+    const body = await res.text();
+    expect(res.status, body).toBe(200);
+    const tokens = JSON.parse(body) as Tokens;
+    expect(tokens.access_token).toBeTruthy();
+    expect(tokens.refresh_token).toBeTruthy();
+    return { clientId: started.clientId, tokens };
+  }
+
+  /** POST an MCP initialize; returns status and the consumed body. */
+  async function mcpInitialize(env: Env, accessToken: string): Promise<{ status: number; body: string }> {
+    const res = await call(env, "/mcp", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "e2e", version: "0" } },
+      }),
+    });
+    return { status: res.status, body: await res.text() };
+  }
+
+  function refresh(env: Env, clientId: string, refreshToken: string, resource: string | null): Promise<Response> {
+    const params: Record<string, string> = {
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: clientId,
+    };
+    if (resource) params.resource = resource;
+    return call(env, "/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(params).toString(),
+    });
+  }
+
+  it("issues a token that /mcp accepts", async () => {
+    const env = fullEnv();
+    const { tokens } = await signIn(env);
+    const res = await mcpInitialize(env, tokens.access_token);
+    expect(res.status, res.body).toBe(200);
+    expect(res.body).toContain('"result"');
+  });
+
+  it("refreshes for the same resource, and the new token works on /mcp", async () => {
+    const env = fullEnv();
+    const { clientId, tokens } = await signIn(env);
+    const res = await refresh(env, clientId, tokens.refresh_token, RESOURCE);
+    const body = await res.text();
+    expect(res.status, body).toBe(200);
+    const next = JSON.parse(body) as Tokens;
+    expect((await mcpInitialize(env, next.access_token)).status).toBe(200);
+  });
+
+  it("serves a client that never sends `resource`, through sign-in and refresh", async () => {
+    const env = fullEnv();
+    const { clientId, tokens } = await signIn(env, { resource: null });
+    expect((await mcpInitialize(env, tokens.access_token)).status).toBe(200);
+    const res = await refresh(env, clientId, tokens.refresh_token, null);
+    const body = await res.text();
+    expect(res.status, body).toBe(200);
+    expect((await mcpInitialize(env, (JSON.parse(body) as Tokens).access_token)).status).toBe(200);
+  });
+
+  it("refuses a refresh for the bare origin: grants are bound to /mcp exactly", async () => {
+    const env = fullEnv();
+    const { clientId, tokens } = await signIn(env);
+    const res = await refresh(env, clientId, tokens.refresh_token, ORIGIN);
+    expect(res.status).toBe(400);
+    const { error } = (await res.json()) as { error: string };
+    expect(["invalid_target", "invalid_grant"]).toContain(error);
+  });
+
+  it("rejects a bearer token it never issued", async () => {
+    const res = await mcpInitialize(fullEnv(), "not-a-real-token");
+    expect(res.status).toBe(401);
+  });
+
+  it("answers 503, never 4xx, on provider routes while CHARTER_GATEWAY_URL is unusable, and the grant survives", async () => {
+    const env = fullEnv();
+    const { clientId, tokens } = await signIn(env);
+    // Same KV, broken config: the provider must not run at all, or the refresh
+    // would 400 (clients then drop their tokens) or rebind the grant.
+    const broken = { ...env, CHARTER_GATEWAY_URL: "not a url" };
+
+    const refreshed = await refresh(broken, clientId, tokens.refresh_token, RESOURCE);
+    expect(refreshed.status).toBe(503);
+    expect(((await refreshed.json()) as { error: string }).error).toBe("temporarily_unavailable");
+
+    const mcp = await mcpInitialize(broken, tokens.access_token);
+    expect(mcp.status).toBe(503);
+    expect(JSON.parse(mcp.body).error).toBe("temporarily_unavailable");
+
+    // Config fixed: the same refresh token still works and the new token is accepted.
+    const fixed = await refresh(env, clientId, tokens.refresh_token, RESOURCE);
+    const body = await fixed.text();
+    expect(fixed.status, body).toBe(200);
+    expect((await mcpInitialize(env, (JSON.parse(body) as Tokens).access_token)).status).toBe(200);
+  });
+
+  it("503s every provider-owned path when unusable, but not look-alikes", async () => {
+    const env = fullEnv({ CHARTER_GATEWAY_URL: "" });
+    for (const [path, method] of [
+      ["/token", "POST"],
+      ["/register", "POST"],
+      ["/mcp", "POST"],
+      ["/mcp/sub", "POST"],
+      ["/.well-known/oauth-authorization-server", "GET"],
+    ] as const) {
+      const res = await call(env, path, { method });
+      await res.text();
+      expect(res.status, path).toBe(503);
+    }
+    const lookalike = await call(env, "/mcpfoo", { method: "POST" });
+    await lookalike.text();
+    expect(lookalike.status).toBe(404);
+  });
+
+  it("treats an origin the provider refuses as unusable: home page up, provider routes 503, no metadata published", async () => {
+    const env = fullEnv({ CHARTER_GATEWAY_URL: "https://gw{x}.example.com" });
+    const home = await call(env, "/");
+    await home.text();
+    expect(home.status).toBe(200);
+    const token = await call(env, "/token", { method: "POST" });
+    await token.text();
+    expect(token.status).toBe(503);
+    const prm = await call(env, "/.well-known/oauth-protected-resource/mcp");
+    await prm.text();
+    expect(prm.status).toBe(500);
+  });
+
+  it("follows the configured origin when it changes between requests", async () => {
+    const resourcesOf = async (env: Env): Promise<string[]> =>
+      (
+        (await (
+          await call(env, "/.well-known/oauth-authorization-server")
+        ).json()) as { protected_resources: string[] }
+      ).protected_resources;
+    expect(await resourcesOf(fullEnv())).toEqual([RESOURCE]);
+    expect(
+      await resourcesOf(fullEnv({ CHARTER_GATEWAY_URL: "https://other.example.com" })),
+    ).toEqual(["https://other.example.com/mcp"]);
   });
 });

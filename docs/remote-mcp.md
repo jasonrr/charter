@@ -218,9 +218,9 @@ point at it. The reference gateway implements both (`gateway/src/prm.ts`):
 - **Well-known URI.** RFC 9728 §3.1 inserts the well-known segment before the
   resource's path, so `https://gw/mcp` is described at
   `https://gw/.well-known/oauth-protected-resource/mcp`. Clients probe that
-  path-suffixed form first and the bare root second, so both paths are served,
-  each reporting the resource *its own* URL identifies — a client that derived
-  the URL checks `resource` against it. `authorization_servers` is the gateway
+  path-suffixed form first, so that path is served. The bare root answers 404,
+  because every token is bound to `<origin>/mcp` and a root document would have
+  to name the bare origin (RFC 9728 §3.3). `authorization_servers` is the gateway
   itself; Google is federated behind it and clients never talk to Google.
 - **`WWW-Authenticate` header.** A `401` from `/mcp` carries
   `resource_metadata=<that URL>`. Not individually mandatory — either mechanism
@@ -551,8 +551,8 @@ point release.
   `@cloudflare/workers-oauth-provider` hard-coded
   `code_challenge_methods_supported: ["plain", "S256"]` and treated PKCE as
   optional, with no configuration hook — a gap this document recorded as a
-  locked decision the deployment did not honour. Provider `0.8.x` added
-  `allowPlainPKCE`; the gateway sets it to `false`, so `plain` (and a request
+  locked decision the deployment did not honour. Provider 1.2 removed
+  plain PKCE, so `plain` (and a request
   naming no method, which defaults to `plain` — i.e. PKCE is effectively
   required) is refused at `/authorize` and the metadata advertises only
   `["S256"]`. Clients are told the same thing they are handed.

@@ -9,14 +9,11 @@ import {
 const ORIGIN = "https://charter.example.com";
 
 describe("protectedResourceOf", () => {
-  // The MCP spec has clients probe the path-suffixed form first and the bare
-  // root second; both must answer, or discovery ends at "abort or use
-  // pre-configured values".
-  it("recognises both well-known paths the spec tells clients to probe", () => {
+  // Only the /mcp document is served: 1.x binds every token to <origin>/mcp, so a document naming the bare origin would hand clients a resource the server refuses.
+  it("recognises the path-suffixed well-known path", () => {
     expect(protectedResourceOf("/.well-known/oauth-protected-resource/mcp")).toBe(
       MCP_PATH,
     );
-    expect(protectedResourceOf("/.well-known/oauth-protected-resource")).toBe("");
   });
 
   it("claims nothing else", () => {
@@ -24,6 +21,7 @@ describe("protectedResourceOf", () => {
       "/",
       "/mcp",
       "/.well-known/oauth-authorization-server",
+      "/.well-known/oauth-protected-resource",
       "/.well-known/oauth-protected-resource/other",
       "/.well-known/oauth-protected-resource/mcp/",
     ]) {
@@ -33,14 +31,10 @@ describe("protectedResourceOf", () => {
 });
 
 describe("protectedResourceMetadata", () => {
-  // RFC 9728 clients check `resource` against the URL they derived the
-  // document from, so each path has to describe the resource its own URL
-  // identifies rather than both returning the same one.
   it("describes the resource the requested path identifies", () => {
     expect(protectedResourceMetadata(ORIGIN, MCP_PATH).resource).toBe(
       `${ORIGIN}/mcp`,
     );
-    expect(protectedResourceMetadata(ORIGIN, "").resource).toBe(ORIGIN);
   });
 
   it("names at least one authorization server, as the spec requires", () => {
