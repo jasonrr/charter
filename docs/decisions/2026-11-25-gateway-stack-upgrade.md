@@ -46,3 +46,7 @@ Nothing is broken today. This is the step that unblocks those three, and none of
 
 - Does `server/discover` list extension capabilities on agents 0.34? Not needed until skills; check in PR 2's staging.
 - `@cloudflare/vitest-pool-workers` 0.12 may need a bump to run the v2 packages. PR 2 finds out.
+
+## Deviations
+
+- T1 commit 60a6270 — deviation: none (review p3 "no garbage-bearer 401 assertion" folded into T2) — parked: none
