@@ -212,8 +212,8 @@ Core variables, in `vars`:
 ```
 
 An empty `CORE_PACKS` means engine verbs only. Do not use `charter` here: that
-value loads the reference `bigquery` and `gdrive` packs, which need GCP and
-fail on Cloudflare. Add your own packs by distribution name or module path,
+value loads the reference `bigquery` pack, which needs GCP and
+fails on Cloudflare. Add your own packs by distribution name or module path,
 comma-separated. An empty value still boots; the container logs a harmless
 "refused: not allow-listed" warning for each reference pack it skips.
 
@@ -234,7 +234,7 @@ size note in step 5):
 A pack setting from [`../configuration.md`](../configuration.md) "Pack-specific"
 goes in as `CORE_<NAME>`, with `<NAME>` the setting's name in that table.
 Use a variable for a plain value and a secret for a token. The reference
-`bigquery` and `gdrive` packs work in GCP mode only (section 10).
+`bigquery` pack works in GCP mode only (section 10).
 
 ## 7. Deploy
 
@@ -367,7 +367,6 @@ npx wrangler kv namespace delete --namespace-id <OAUTH_KV id>
 
 ## 10. What stays on GCP
 
-Nothing stays on GCP for the engine. Verb results are always sent inline; the
-`RESULTS_BUCKET` offload is off. The reference `bigquery` and `gdrive` packs
-read Secret Manager and Application Default Credentials. They work in GCP mode
-only.
+Nothing stays on GCP for the engine. Verb results are always sent inline,
+bounded by the gateway's 1 MB cap. The reference `bigquery` pack reads Secret
+Manager and Application Default Credentials. It works in GCP mode only.

@@ -4,6 +4,7 @@ import requests
 
 import charter.main as main
 from charter import improve
+from charter.errors import VerbError
 
 
 class FakeRequest:
@@ -208,8 +209,11 @@ def test_hint_present_on_denied_unknown_and_verberror_when_enabled(monkeypatch):
     _as_caller(monkeypatch)
     body, status = _parse(main.bridge(FakeRequest(body={"verb": "no.such.verb"})))
     assert status == 404 and body["hint"] == improve.HINT
-    body, status = _parse(main.bridge(FakeRequest(body={"verb": "result.read", "id": "nope"})))
-    assert body["ok"] is False and body["error"] == "result_unknown" and body["hint"] == improve.HINT
+    def boom(body, caller):
+        raise VerbError(404, "not_found", "nope")
+    monkeypatch.setitem(main.VERBS, "demo.thing.read", (boom, "post"))
+    body, status = _parse(main.bridge(FakeRequest(body={"verb": "demo.thing.read"})))
+    assert body["ok"] is False and body["error"] == "not_found" and body["hint"] == improve.HINT
 
 
 def test_hint_absent_when_disabled_and_on_improve_itself(monkeypatch):

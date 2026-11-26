@@ -61,18 +61,13 @@ Reference in, reference out (docs/remote-mcp.md §4.5):
   the handler (a Drive file id, a table name, a deal id) — never declare an
   inline-base64 or large-body argument. The model authors small JSON;
   pre-existing artifacts arrive as references.
-- **Large outputs are offloaded for you.** Return a plain dict. When the
-  deployment configures `RESULTS_BUCKET`, any success envelope over
-  `MAX_INLINE_BYTES` is stored server-side and the caller gets a `result_ref`
-  the gateway serves as an MCP resource. Do not build per-verb blob handling.
+- **Large outputs are bounded, not offloaded.** Return a plain dict. The
+  gateway caps a response at 1 MB inline; past that it truncates and returns
+  `isError: true`. Do not build per-verb blob handling.
 - **Prefer diagnostics + a preview over bulk.** A verb that assembles a large
-  body should return its counts and byte size, not the body — the caller can
-  fetch the reference if it needs everything.
-- packtest's 1 MB response-budget check still applies to what you return:
-  it keeps a pack honest on deployments that run without a results bucket.
-- `result_ref` is a reserved top-level key in success results. Don't return
-  your own `result_ref` field — the gateway treats that shape as an offload
-  envelope and will hide the real body behind a resource link.
+  body should return its counts, byte size and a preview, or write the body
+  somewhere and return a reference to it (a Drive file id, a table name).
+- packtest's 1 MB response-budget check applies to what you return.
 
 ## The dry_run Convention
 

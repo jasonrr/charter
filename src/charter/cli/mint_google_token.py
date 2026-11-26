@@ -15,9 +15,8 @@ from charter.settings import get_settings
 
 SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly",
-    # drive.file (create/manage only files this app creates): needed by the
-    # gdrive pack's resumable-upload verb — the local→Drive hop for binaries
-    # that must never go inline (§4.5). Re-run this mint once after adding it.
+    # drive.file (create/manage only files this app creates): for pack verbs
+    # that write Drive files. Re-run this mint once after adding it.
     "https://www.googleapis.com/auth/drive.file",
 ]
 

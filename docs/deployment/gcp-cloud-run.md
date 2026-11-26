@@ -47,27 +47,6 @@ did. Order relative to the code deploy doesn't matter in either direction —
 table writes the columns that exist, and an old binary against a new table
 leaves the new one NULL.
 
-## Results bucket (§4.5 payload offload)
-
-Oversized verb results are offloaded to GCS and fetched back by reference
-(`result.read`). One bucket, private, with a lifecycle rule doing the
-expiry — core never deletes.
-
-    gcloud storage buckets create gs://$PROJECT-charter-results \
-      --project $PROJECT --location $REGION --uniform-bucket-level-access
-
-    cat > /tmp/charter-results-lifecycle.json <<'EOF'
-    {"rule": [{"action": {"type": "Delete"}, "condition": {"age": 1}}]}
-    EOF
-    gcloud storage buckets update gs://$PROJECT-charter-results \
-      --lifecycle-file=/tmp/charter-results-lifecycle.json
-
-    gcloud storage buckets add-iam-policy-binding gs://$PROJECT-charter-results \
-      --member "serviceAccount:$RUNTIME_SA" --role roles/storage.objectAdmin
-
-Then set `RESULTS_BUCKET=$PROJECT-charter-results` on the service. Leave it
-unset to disable offload (results stay inline; the gateway truncates at 1 MB).
-
 ## Staging
 
 A staging core is a second Cloud Run service from the same image — everything
@@ -82,8 +61,6 @@ that must differ is already an env var, so no code or template changes:
   `GRANTS_SECRET_NAME=charter-grants-staging`,
   `AUDIT_TABLE=charter.audit_staging` — staging never reads or writes a
   production secret or audit row.
-- `RESULTS_BUCKET` unset, or a separate `-staging` bucket with the same
-  lifecycle rule.
 - CF Access is optional for staging, as it is generally: a plain `run.app` URL
   works because core fails closed on auth, and the staging gateway simply omits
   the `CF_ACCESS_*` secrets. If you do want tunnel parity, use its own

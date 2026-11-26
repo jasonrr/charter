@@ -37,10 +37,9 @@ Match on the `error` field:
 
 - Large **inputs** go by reference: pass an id or URI the verb dereferences
   (a Drive file id, a table name) — never paste a large body into args.
-- Large **results** come back as a `resource_link` (`charter://result/<id>`)
-  instead of inline JSON. Read the linked resource only if the inline summary
-  is not enough — it is the full body. Links expire and are readable only by
-  the caller that produced them; if one is gone, re-run the verb.
+- Large **results** are capped at 1 MB inline. Past that the result is
+  truncated and returned as an error; narrow the query (fewer rows, fewer
+  columns, a filter) and re-run.
 
 ## Reporting a gap
 
