@@ -123,8 +123,8 @@ Set the non-secret values in `wrangler.jsonc` → `vars`:
     5xx on purpose: clients treat it as retryable and keep their tokens, so fixing
     the variable does not sign anyone out. The protected-resource metadata
     (`/.well-known/oauth-protected-resource/*`) answers `500 server_error` rather
-    than publishing an origin the operator never chose. Sign-in and `/call` keep
-    their own named `503`s.
+    than publishing an origin the operator never chose. Sign-in keeps its own
+    named `503`s, and `/call` is unaffected.
 
   The shipped placeholder is `https://charter-gateway.example.com`. It used to be
   a `workers.dev` address, which is a real namespace a third party can register:

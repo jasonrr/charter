@@ -648,7 +648,7 @@ describe("OAuth end to end (authorize → token → /mcp → refresh)", () => {
     expect(lookalike.status).toBe(404);
   });
 
-  it("does not let an origin that makes the provider throw take down /call or the home page", async () => {
+  it("treats an origin the provider refuses as unusable: home page up, provider routes 503, no metadata published", async () => {
     const env = fullEnv({ CHARTER_GATEWAY_URL: "https://gw{x}.example.com" });
     const home = await call(env, "/");
     await home.text();
@@ -656,6 +656,9 @@ describe("OAuth end to end (authorize → token → /mcp → refresh)", () => {
     const token = await call(env, "/token", { method: "POST" });
     await token.text();
     expect(token.status).toBe(503);
+    const prm = await call(env, "/.well-known/oauth-protected-resource/mcp");
+    await prm.text();
+    expect(prm.status).toBe(500);
   });
 
   it("follows the configured origin when it changes between requests", async () => {

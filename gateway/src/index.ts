@@ -1160,6 +1160,10 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const origin = gatewayOrigin(env.CHARTER_GATEWAY_URL);
+    // With no usable origin the provider must not run: it would bind refreshed
+    // grants to a placeholder resource and 4xx clients into discarding tokens.
+    // An origin the provider refuses to build for is as unusable as none.
+    const provider = origin ? providerFor(origin) : null;
 
     // RFC 9728 protected-resource metadata (prm.ts). Served ahead of the
     // provider because it describes the MCP endpoint rather than the sign-in
@@ -1177,7 +1181,7 @@ export default {
           },
         });
       }
-      if (!origin) {
+      if (!origin || !provider) {
         return metadataResponse(
           {
             error: "server_error",
@@ -1191,11 +1195,8 @@ export default {
       return metadataResponse(protectedResourceMetadata(origin, resourcePath));
     }
 
-    // With no usable origin the provider must not run: it would bind refreshed
-    // grants to a placeholder resource and 4xx clients into discarding tokens.
-    // A 5xx keeps their tokens; the rest of the surface is authHandler, the
+    // A 5xx keeps clients' tokens; the rest of the surface is authHandler, the
     // provider's defaultHandler anyway, whose own checks name the problem.
-    const provider = origin ? providerFor(origin) : null;
     if (!provider) {
       if (isProviderPath(url.pathname)) {
         return oauthError(
