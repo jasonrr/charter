@@ -54,7 +54,10 @@ async function call(
  * /authorize. Returns the signed (unconsented) state from the consent page's
  * hidden input and the flow cookie that binds it to "this browser".
  */
-async function startFlow(env: Env): Promise<{ state: string; cookie: string }> {
+async function startFlow(
+  env: Env,
+  extra: Record<string, string> = {},
+): Promise<{ state: string; cookie: string; clientId: string }> {
   const reg = await call(env, "/register", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -76,6 +79,7 @@ async function startFlow(env: Env): Promise<{ state: string; cookie: string }> {
         state: "client-state",
         code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
         code_challenge_method: "S256",
+        ...extra,
       }).toString(),
   );
   expect(authorize.status).toBe(200);
@@ -85,7 +89,7 @@ async function startFlow(env: Env): Promise<{ state: string; cookie: string }> {
   const cookie = authorize.headers.get("Set-Cookie")?.split(";")[0];
   expect(state).toBeTruthy();
   expect(cookie).toMatch(/^__Host-charter_state_/);
-  return { state: state!, cookie: cookie! };
+  return { state: state!, cookie: cookie!, clientId: client_id };
 }
 
 /** POST the consent form; returns the re-sealed, consented state Google would echo back. */
@@ -113,6 +117,32 @@ function spyOnUpstreamFetch(): string[] {
   }) as typeof fetch);
   return seen;
 }
+
+/** Answer Google's token endpoint with a usable identity for `email`. */
+function stubGoogleSignIn(email: string): void {
+  const b64url = (o: unknown) =>
+    btoa(JSON.stringify(o)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  // Unsigned on purpose: nothing in the gateway verifies this — core does
+  // (google.ts's header comment). decodeIdTokenClaims only reads the payload.
+  const idToken = `${b64url({ alg: "none" })}.${b64url({
+    email,
+    email_verified: true,
+    exp: Math.floor(Date.now() / 1000) + 3600,
+  })}.`;
+  vi.stubGlobal("fetch", (async () =>
+    new Response(
+      JSON.stringify({ id_token: idToken, refresh_token: "refresh-abc" }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    )) as typeof fetch);
+}
+
+const VERIFIER = "charter-e2e-verifier-0123456789-abcdefghijklmnop"; // RFC 7636: 43-128 chars of [A-Za-z0-9-._~]
+async function s256(verifier: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  return btoa(String.fromCharCode(...new Uint8Array(digest)))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+const RESOURCE = `${ORIGIN}/mcp`;
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -260,24 +290,6 @@ describe("/callback wiring order", () => {
     // The client's own `state` still has to survive alongside it.
     expect(back.searchParams.get("state")).toBe("client-state");
   });
-
-  /** Answer Google's token endpoint with a usable identity for `email`. */
-  function stubGoogleSignIn(email: string): void {
-    const b64url = (o: unknown) =>
-      btoa(JSON.stringify(o)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-    // Unsigned on purpose: nothing in the gateway verifies this — core does
-    // (google.ts's header comment). decodeIdTokenClaims only reads the payload.
-    const idToken = `${b64url({ alg: "none" })}.${b64url({
-      email,
-      email_verified: true,
-      exp: Math.floor(Date.now() / 1000) + 3600,
-    })}.`;
-    vi.stubGlobal("fetch", (async () =>
-      new Response(
-        JSON.stringify({ id_token: idToken, refresh_token: "refresh-abc" }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      )) as typeof fetch);
-  }
 
   async function consentedFlow(env: Env): Promise<{ state: string; cookie: string }> {
     const started = await startFlow(env);
@@ -439,5 +451,110 @@ describe("401 resource_metadata decoration (RFC 9728 discovery mechanism 1)", ()
     const res = await call(env, "/mcp", { method: "POST" });
     expect(res.status).toBe(401);
     expect(res.headers.get("WWW-Authenticate") ?? "").not.toContain("resource_metadata");
+  });
+});
+
+describe("OAuth end to end (authorize → token → /mcp → refresh)", () => {
+  type Tokens = { access_token: string; refresh_token: string };
+
+  /**
+   * Full sign-in. By default sends RFC 8707 `resource` at /authorize and
+   * /token as Claude does; `{ resource: null }` signs in as a client that
+   * never sends one.
+   */
+  async function signIn(
+    env: Env,
+    opts: { resource?: string | null } = {},
+  ): Promise<{ clientId: string; tokens: Tokens }> {
+    const resource = opts.resource === undefined ? RESOURCE : opts.resource;
+    const withResource: Record<string, string> = resource ? { resource } : {};
+    const started = await startFlow(env, { code_challenge: await s256(VERIFIER), ...withResource });
+    const state = await consent(env, started.state, started.cookie);
+    stubGoogleSignIn("someone@example.com");
+    const cb = await call(env, `/callback?state=${encodeURIComponent(state)}&code=good`, {
+      headers: { Cookie: started.cookie },
+    });
+    await cb.text();
+    expect(cb.status).toBe(302);
+    const code = new URL(cb.headers.get("Location")!).searchParams.get("code")!;
+    const res = await call(env, "/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: REDIRECT_URI,
+        client_id: started.clientId,
+        code_verifier: VERIFIER,
+        ...withResource,
+      }).toString(),
+    });
+    const body = await res.text();
+    expect(res.status, body).toBe(200);
+    const tokens = JSON.parse(body) as Tokens;
+    expect(tokens.access_token).toBeTruthy();
+    expect(tokens.refresh_token).toBeTruthy();
+    return { clientId: started.clientId, tokens };
+  }
+
+  /** POST an MCP initialize; returns status and the consumed body. */
+  async function mcpInitialize(env: Env, accessToken: string): Promise<{ status: number; body: string }> {
+    const res = await call(env, "/mcp", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "e2e", version: "0" } },
+      }),
+    });
+    return { status: res.status, body: await res.text() };
+  }
+
+  function refresh(env: Env, clientId: string, refreshToken: string, resource: string | null): Promise<Response> {
+    const params: Record<string, string> = {
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: clientId,
+    };
+    if (resource) params.resource = resource;
+    return call(env, "/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(params).toString(),
+    });
+  }
+
+  it("issues a token that /mcp accepts", async () => {
+    const env = fullEnv();
+    const { tokens } = await signIn(env);
+    const res = await mcpInitialize(env, tokens.access_token);
+    expect(res.status, res.body).toBe(200);
+    expect(res.body).toContain('"result"');
+  });
+
+  it("refreshes for the same resource, and the new token works on /mcp", async () => {
+    const env = fullEnv();
+    const { clientId, tokens } = await signIn(env);
+    const res = await refresh(env, clientId, tokens.refresh_token, RESOURCE);
+    const body = await res.text();
+    expect(res.status, body).toBe(200);
+    const next = JSON.parse(body) as Tokens;
+    expect((await mcpInitialize(env, next.access_token)).status).toBe(200);
+  });
+
+  it("serves a client that never sends `resource`, through sign-in and refresh", async () => {
+    const env = fullEnv();
+    const { clientId, tokens } = await signIn(env, { resource: null });
+    expect((await mcpInitialize(env, tokens.access_token)).status).toBe(200);
+    const res = await refresh(env, clientId, tokens.refresh_token, null);
+    const body = await res.text();
+    expect(res.status, body).toBe(200);
+    expect((await mcpInitialize(env, (JSON.parse(body) as Tokens).access_token)).status).toBe(200);
   });
 });
