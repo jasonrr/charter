@@ -462,10 +462,11 @@ describe("401 resource_metadata decoration (RFC 9728 discovery mechanism 1)", ()
     expect(header).not.toContain("evil.example.net");
   });
 
-  it("leaves the 401 undecorated when CHARTER_GATEWAY_URL is invalid — never publishes a bad origin", async () => {
+  it("leaves the 503 undecorated when CHARTER_GATEWAY_URL is invalid — never publishes a bad origin", async () => {
     const env = fullEnv({ CHARTER_GATEWAY_URL: "not a url" });
     const res = await call(env, "/mcp", { method: "POST" });
-    expect(res.status).toBe(401);
+    await res.text();
+    expect(res.status).toBe(503);
     expect(res.headers.get("WWW-Authenticate") ?? "").not.toContain("resource_metadata");
   });
 });
@@ -605,5 +606,68 @@ describe("OAuth end to end (authorize → token → /mcp → refresh)", () => {
   it("rejects a bearer token it never issued", async () => {
     const res = await mcpInitialize(fullEnv(), "not-a-real-token");
     expect(res.status).toBe(401);
+  });
+
+  it("answers 503, never 4xx, on provider routes while CHARTER_GATEWAY_URL is unusable, and the grant survives", async () => {
+    const env = fullEnv();
+    const { clientId, tokens } = await signIn(env);
+    // Same KV, broken config: the provider must not run at all, or the refresh
+    // would 400 (clients then drop their tokens) or rebind the grant.
+    const broken = { ...env, CHARTER_GATEWAY_URL: "not a url" };
+
+    const refreshed = await refresh(broken, clientId, tokens.refresh_token, RESOURCE);
+    expect(refreshed.status).toBe(503);
+    expect(((await refreshed.json()) as { error: string }).error).toBe("temporarily_unavailable");
+
+    const mcp = await mcpInitialize(broken, tokens.access_token);
+    expect(mcp.status).toBe(503);
+    expect(JSON.parse(mcp.body).error).toBe("temporarily_unavailable");
+
+    // Config fixed: the same refresh token still works and the new token is accepted.
+    const fixed = await refresh(env, clientId, tokens.refresh_token, RESOURCE);
+    const body = await fixed.text();
+    expect(fixed.status, body).toBe(200);
+    expect((await mcpInitialize(env, (JSON.parse(body) as Tokens).access_token)).status).toBe(200);
+  });
+
+  it("503s every provider-owned path when unusable, but not look-alikes", async () => {
+    const env = fullEnv({ CHARTER_GATEWAY_URL: "" });
+    for (const [path, method] of [
+      ["/token", "POST"],
+      ["/register", "POST"],
+      ["/mcp", "POST"],
+      ["/mcp/sub", "POST"],
+      ["/.well-known/oauth-authorization-server", "GET"],
+    ] as const) {
+      const res = await call(env, path, { method });
+      await res.text();
+      expect(res.status, path).toBe(503);
+    }
+    const lookalike = await call(env, "/mcpfoo", { method: "POST" });
+    await lookalike.text();
+    expect(lookalike.status).toBe(404);
+  });
+
+  it("does not let an origin that makes the provider throw take down /call or the home page", async () => {
+    const env = fullEnv({ CHARTER_GATEWAY_URL: "https://gw{x}.example.com" });
+    const home = await call(env, "/");
+    await home.text();
+    expect(home.status).toBe(200);
+    const token = await call(env, "/token", { method: "POST" });
+    await token.text();
+    expect(token.status).toBe(503);
+  });
+
+  it("follows the configured origin when it changes between requests", async () => {
+    const resourcesOf = async (env: Env): Promise<string[]> =>
+      (
+        (await (
+          await call(env, "/.well-known/oauth-authorization-server")
+        ).json()) as { protected_resources: string[] }
+      ).protected_resources;
+    expect(await resourcesOf(fullEnv())).toEqual([RESOURCE]);
+    expect(
+      await resourcesOf(fullEnv({ CHARTER_GATEWAY_URL: "https://other.example.com" })),
+    ).toEqual(["https://other.example.com/mcp"]);
   });
 });

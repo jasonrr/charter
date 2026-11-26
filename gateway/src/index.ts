@@ -940,21 +940,45 @@ const authHandler = {
   },
 };
 
-// An origin that never matches a real request, used only when
-// CHARTER_GATEWAY_URL is invalid. With it the provider still constructs,
-// so /call and the named sign-in 503s (gatewayUrlProblem/missingConfig)
-// behave as before. Sign-in refuses to run in that state, so no token is
-// ever issued for it.
-const UNCONFIGURED_ORIGIN = "https://unconfigured.invalid";
-
 // One provider per configured origin. The resource comes from env, so it
 // can't be built at module scope, and the constructor holds a per-instance
 // JWKS cache for CIMD private_key_jwt clients, so it isn't rebuilt per
 // request. The origin is constant per deployment; tests vary it per env.
-let cached: { origin: string; provider: OAuthProvider } | undefined;
-function providerFor(origin: string): OAuthProvider {
-  if (cached?.origin !== origin) cached = { origin, provider: makeProvider(origin) };
+//
+// null means the origin can't back a provider: the provider rejects some
+// origins that gatewayOrigin accepts (e.g. a `{` in the host). That outcome is
+// a pure function of the origin, so it is cached with it and logged once; a
+// corrected CHARTER_GATEWAY_URL is a different origin and builds afresh.
+let cached: { origin: string; provider: OAuthProvider | null } | undefined;
+function providerFor(origin: string): OAuthProvider | null {
+  if (cached?.origin !== origin) {
+    let provider: OAuthProvider | null = null;
+    try {
+      provider = makeProvider(origin);
+    } catch (err) {
+      console.error(
+        `charter-gateway: cannot build the OAuth provider for CHARTER_GATEWAY_URL origin ${origin}: ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+    cached = { origin, provider };
+  }
   return cached.provider;
+}
+
+/**
+ * The paths OAuthProvider answers itself, matched the way it matches them:
+ * /token, /register and the authorization-server metadata exactly, /mcp and
+ * everything under /mcp/. Everything else reaches `authHandler` regardless.
+ */
+function isProviderPath(pathname: string): boolean {
+  return (
+    pathname === "/token" ||
+    pathname === "/register" ||
+    pathname === "/.well-known/oauth-authorization-server" ||
+    pathname === MCP_PATH ||
+    pathname.startsWith(`${MCP_PATH}/`)
+  );
 }
 
 // OAuthProvider types both handler slots as `ExportedHandler` with the env
@@ -1167,7 +1191,21 @@ export default {
       return metadataResponse(protectedResourceMetadata(origin, resourcePath));
     }
 
-    const provider = providerFor(origin || UNCONFIGURED_ORIGIN);
+    // With no usable origin the provider must not run: it would bind refreshed
+    // grants to a placeholder resource and 4xx clients into discarding tokens.
+    // A 5xx keeps their tokens; the rest of the surface is authHandler, the
+    // provider's defaultHandler anyway, whose own checks name the problem.
+    const provider = origin ? providerFor(origin) : null;
+    if (!provider) {
+      if (isProviderPath(url.pathname)) {
+        return oauthError(
+          "temporarily_unavailable",
+          "charter-gateway is misconfigured: CHARTER_GATEWAY_URL is unset or invalid.",
+          503,
+        );
+      }
+      return authHandler.fetch(request, env);
+    }
 
     if (request.method === "POST" && url.pathname === "/register") {
       const screened = await screenRegistration(request, env, ctx, provider);

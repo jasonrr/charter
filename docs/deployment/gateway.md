@@ -27,6 +27,8 @@ follows the incoming request's `Host` header, so a `*.workers.dev` address
 though, the Google side is on you: a hostname the gateway will answer but Google
 has no redirect URI for fails silently — no error points at the mismatch, just a
 client stuck at Google's consent screen or bounced back with an error page.
+Extra hostnames serve sign-in and `/call`, but `/mcp` accepts tokens only on
+`CHARTER_GATEWAY_URL`'s origin (see "Provider 1.x resource").
 
 ## 2. Repoint core at that client
 
@@ -104,7 +106,8 @@ Set the non-secret values in `wrangler.jsonc` → `vars`:
   request, so a Worker reachable on a Host it wasn't meant to answer can't get
   that Host whitelisted at registration time. If you answer more than one
   hostname (see "Register every hostname" above), add the others to
-  `CHARTER_EXTRA_REDIRECT_ORIGINS` below.
+  `CHARTER_EXTRA_REDIRECT_ORIGINS` below; `/mcp` still accepts tokens only on
+  this origin (see "Provider 1.x resource").
 
   Getting it wrong is loud, in three places (`src/gateway_url.ts`):
 
@@ -114,9 +117,14 @@ Set the non-secret values in `wrangler.jsonc` → `vars`:
     `503` naming both origins: `CHARTER_GATEWAY_URL is https://a, but this
     request arrived at https://b`. A request arriving on a loopback host is
     exempt, so `wrangler dev` still runs against a production-shaped config.
-  - **Unusable at all** — `POST /register` answers `500 server_error` rather
-    than screening against an empty origin, and the metadata endpoints answer
-    `500` rather than publishing an origin the operator never chose.
+  - **Unusable at all** (unset, not https, or an origin the OAuth provider
+    refuses to build for) — `/token`, `/register`, `/mcp` and the
+    authorization-server metadata answer `503 temporarily_unavailable`. It is a
+    5xx on purpose: clients treat it as retryable and keep their tokens, so fixing
+    the variable does not sign anyone out. The protected-resource metadata
+    (`/.well-known/oauth-protected-resource/*`) answers `500 server_error` rather
+    than publishing an origin the operator never chose. Sign-in and `/call` keep
+    their own named `503`s.
 
   The shipped placeholder is `https://charter-gateway.example.com`. It used to be
   a `workers.dev` address, which is a real namespace a third party can register:
@@ -440,7 +448,13 @@ Grants carrying any other value sign in once more after the deploy. Grants with 
 bind to `/mcp` on their next refresh. CIMD clients' grants are no longer revoked when the same
 user signs in again (1.4: their client_id is shared by every installation), so they accumulate
 until they expire, and signing in again does not invalidate an earlier refresh token. To cut one
-off, delete its `grant:` key.
+off, delete its `grant:` key and its `token:<userId>:<grantId>:` keys; deleting only the
+grant leaves the current access token working until it expires.
+
+`/mcp` accepts tokens only on `CHARTER_GATEWAY_URL`'s origin. Extra hostnames in
+`CHARTER_EXTRA_REDIRECT_ORIGINS`, and loopback under `wrangler dev`, still serve sign-in and
+`/call`, but `/mcp` there answers `401 invalid_token` (1.x checks the request origin against the
+token audience).
 
 ## Staging
 
