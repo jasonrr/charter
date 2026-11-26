@@ -39,3 +39,5 @@
 
 - A plan that claims "fixed library strings" for an echoed e.message → check the library throw sites; provider errors echo caller query values, and upgrades add new error classes (CimdFetchError) carrying fetched-URL detail.
 - Library upgrade plans that list "tests expected to fail before the bump" → also predict tests for new error handling; the CIMD local-400 test failed on 0.10.3 unannounced.
+- A provider that binds tokens to a configured resource, given a placeholder when config is invalid → refresh 4xx makes clients discard tokens and can permanently rebind resource-less grants; with no usable config, 5xx the provider routes instead of running a stand-in.
+- Library 1.x audience check compares the request origin, not just the resource → multi-host deploys (extra origins, wrangler dev loopback) lose /mcp; check request-origin coupling before pinning one resource.
