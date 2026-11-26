@@ -34,3 +34,8 @@
 - Moving a map from store A to store B with "B wins once it exists" turns the first write to B into a lockout of everything still only in A → the first write must seed from A, and the doc must say to delete A afterwards (while A exists, a cold start during a B outage serves it, stale).
 - A lenient response parse at an auth boundary (`(result or [{}])[0].get(...) or []`) turned four malformed "success" shapes into "no row", and "no row" meant "serve the fallback map" → be strict on shape where an empty result changes who is authorized.
 - Three reviewers on one 870-line diff all found the same p1 and p2 in 70 s; the author's own self-review missed both because they live in the operator flow (`.env`, migration), not the engine path the tests cover. Execute the documented runbook, not just the tests.
+
+## gateway-stack-upgrade (PR #11, 2026-11-26)
+
+- A plan that claims "fixed library strings" for an echoed e.message → check the library throw sites; provider errors echo caller query values, and upgrades add new error classes (CimdFetchError) carrying fetched-URL detail.
+- Library upgrade plans that list "tests expected to fail before the bump" → also predict tests for new error handling; the CIMD local-400 test failed on 0.10.3 unannounced.

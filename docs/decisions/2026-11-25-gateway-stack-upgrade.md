@@ -50,3 +50,4 @@ Nothing is broken today. This is the step that unblocks those three, and none of
 ## Deviations
 
 - T1 commit 60a6270 — deviation: none (review p3 "no garbage-bearer 401 assertion" folded into T2) — parked: none
+- T2 commit 7608cd7 (+ 79c3b46 review comment/doc fixes) — deviation: added garbage-bearer 401 test (T1 review p3); prm.ts stale comment and whole-sentence remote-mcp.md rewrite; CIMD local-400 test failed pre-bump (plan did not predict it; 0.10.3 echoed the URL). Accepted unfixed p3s: lazy provider construction moves a hypothetical constructor error from deploy to first request; a client sending resource=<bare origin> at /authorize sees the generic redirect_uri preamble before the invalid_target message (the one expected re-sign-in) — parked: none
